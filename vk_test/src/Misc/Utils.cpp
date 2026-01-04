@@ -20,3 +20,11 @@ std::vector<char> Utils::ReadFileBinary(std::string_view path)
 
 	return data;
 }
+
+float Utils::BytesToMegabytes(u64 sizeBytes)
+{
+	double sizeBytesReal = sizeBytes;
+	sizeBytesReal /= 1000;
+	sizeBytesReal /= 1000;
+	return sizeBytesReal;
+}

@@ -1,5 +1,4 @@
-#include "Core.h"
-#include "Utils.h"
+#include "Engine.h"
 
 #define NOMINMAX
 
@@ -10,10 +9,9 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include "glfw/glfw3native.h"
 
-#include "VkUtils.h"
+#include "Renderer/VkUtils.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/transform.hpp>
@@ -22,36 +20,13 @@
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_vulkan.h"
 
-#include "PipelineBuilder.h"
-#include "Resource.h"
+#include "Renderer/PipelineBuilder.h"
 
-class DeletionQueue
-{
-public:
-	DeletionQueue() = default;
+#include "Async/TaskPool.h"
 
-	~DeletionQueue()
-	{
-		Flush();
-	}
-
-	void PushBack(std::function<void()>&& function)
-	{
-		m_DeletionQueue.push_back(function);
-	}
-
-	void Flush()
-	{
-		// reverse iterate the deletion queue to execute all the functions
-		for (auto it = m_DeletionQueue.rbegin(); it != m_DeletionQueue.rend(); it++)
-			(*it)(); //call functors
-
-		m_DeletionQueue.clear();
-	}
-
-private:
-	std::deque<std::function<void()>> m_DeletionQueue;
-};
+#include "Renderer/RendererContext.h"
+#include "AssetManager.h"
+#include "Renderer/Mesh.h"
 
 struct FrameData
 {
@@ -68,24 +43,6 @@ struct SwapchainImage
 	VkImageView imageView = VK_NULL_HANDLE;
 	VkSemaphore presentSemaphore = VK_NULL_HANDLE; // finish queue -> present
 };
-
-// window
-GLFWwindow* g_Window = nullptr;
-
-// vulkan cleanup queue
-DeletionQueue g_MainDeletionQueue;
-
-// vukan instance & device
-VkInstance g_vkInstance = VK_NULL_HANDLE;
-VkSurfaceKHR g_vkSurface = VK_NULL_HANDLE;
-VkDebugUtilsMessengerEXT g_vkDebugMessenger = VK_NULL_HANDLE;
-VkPhysicalDevice g_PhysicalDevice = VK_NULL_HANDLE;
-VkDevice g_Device = VK_NULL_HANDLE;
-
-// queues 
-uint32_t g_GraphicsQueueFamilyIndex = 0;
-std::vector<VkQueue> g_Queues;
-uint32_t g_GraphicsQueueIndex = 0;
 
 // fifs
 constexpr int FRAMES_IN_FLIGHT = 2;
@@ -140,14 +97,11 @@ PushConstant0 g_ColorPushConst = {
 };
 
 // geometry data
-
 struct MeshPushConstant
 {
 	glm::mat4 worldMatrix;
 	VkDeviceAddress vertexBuffer;
 };
-
-std::vector<MeshResource> g_Meshes;
 
 struct Transform
 {
@@ -158,280 +112,12 @@ struct Transform
 
 Transform g_MeshTransform;
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL VkDebugErrorCallback(
-VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-	VkDebugUtilsMessageTypeFlagsEXT messageType,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, 
-	void* pUserData) 
-{
-#if _WIN32
-	static HANDLE stdOutputHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-	static constexpr int DEFAULT_TEXT_COLOR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-	
-	int textColor = DEFAULT_TEXT_COLOR;
-
-	if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
-		textColor = FOREGROUND_RED;
-	else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
-		textColor = FOREGROUND_RED | FOREGROUND_GREEN;
-
-	SetConsoleTextAttribute(stdOutputHandle, textColor);
-	std::cout << "validation layer error: " << pCallbackData->pMessage << "\n";
-	SetConsoleTextAttribute(stdOutputHandle, DEFAULT_TEXT_COLOR);
-#else
-	std::cout << "validation layer error: " << pCallbackData->pMessage << "\n";
-#endif
-	
-	return VK_FALSE;
-}
-
-void CreateInstance()
-{
-	VkApplicationInfo appInfo = {};
-	appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-	appInfo.pApplicationName = "massi_vk_test";
-	appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-	appInfo.pEngineName = "massi";
-	appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-	appInfo.apiVersion = VK_API_VERSION_1_3;
-
-	VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = {};
-	debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-	debugCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-	debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-	debugCreateInfo.pfnUserCallback = VkDebugErrorCallback;
-	debugCreateInfo.pUserData = nullptr; // Optional
-
-	VkInstanceCreateInfo createInfo = {};
-	createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-	createInfo.pApplicationInfo = &appInfo;
-	createInfo.pNext = &debugCreateInfo;
-
-	// extensions...
-	uint32_t glfwExtensionsCount = 0;
-	const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionsCount);
-
-	std::vector<const char*> extensions = {
-		VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-	};
-
-	extensions.reserve(extensions.size() + (size_t)glfwExtensionsCount);
-	for (uint32_t i = 0; i < glfwExtensionsCount; i++)
-		extensions.push_back(glfwExtensions[i]);
-
-	createInfo.enabledExtensionCount = (uint32_t)extensions.size();
-	createInfo.ppEnabledExtensionNames = extensions.data();
-
-	// layers...
-	uint32_t availableLayersCount;
-	vkCheck(vkEnumerateInstanceLayerProperties(&availableLayersCount, nullptr));
-
-	std::vector<VkLayerProperties> availableLayers(availableLayersCount);
-	vkCheck(vkEnumerateInstanceLayerProperties(&availableLayersCount, availableLayers.data()));
-
-	std::vector<const char*> desiredLayers = {
-		"VK_LAYER_KHRONOS_validation" // default vulkan sdk validation layer
-	};
-
-	for (const char* myLayer : desiredLayers)
-	{
-		bool found = false;
-
-		for (const VkLayerProperties& availLayer : availableLayers)
-			if (strcmp(myLayer, availLayer.layerName) == 0)
-				found = true;
-
-		check(found);
-	}
-
-	createInfo.enabledLayerCount = (uint32_t)desiredLayers.size();
-	createInfo.ppEnabledLayerNames = desiredLayers.data();
-
-	// create instance
-	VkResult createInstanceRes = vkCreateInstance(&createInfo, nullptr, &g_vkInstance);
-	vkCheck(createInstanceRes);
-
-	auto debugLogSetterProc = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vkInstance, "vkCreateDebugUtilsMessengerEXT");
-	check(debugLogSetterProc);
-
-	vkCheck(debugLogSetterProc(g_vkInstance, &debugCreateInfo, nullptr, &g_vkDebugMessenger));
-
-	g_MainDeletionQueue.PushBack([]() {
-		auto destroyMessengerProc = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vkInstance, "vkDestroyDebugUtilsMessengerEXT");
-		destroyMessengerProc(g_vkInstance, g_vkDebugMessenger, nullptr);
-
-		vkDestroySurfaceKHR(g_vkInstance, g_vkSurface, nullptr);
-
-		vkDestroyInstance(g_vkInstance, nullptr);
-	});
-}
-
-void CreateSurfaceWin32()
-{
-	VkWin32SurfaceCreateInfoKHR surfaceInfo = {};
-	surfaceInfo.hinstance = GetModuleHandleA(nullptr);
-	surfaceInfo.hwnd = glfwGetWin32Window(g_Window);
-	surfaceInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-
-	VkResult createRes = vkCreateWin32SurfaceKHR(g_vkInstance, &surfaceInfo, nullptr, &g_vkSurface);
-	vkCheck(createRes);
-}
-
-bool DeviceSupportsExtensions(VkPhysicalDevice dev, const std::vector<const char*>& required_exts)
-{
-	uint32_t gpuExtensionsCount;
-	vkCheck(vkEnumerateDeviceExtensionProperties(dev, nullptr, &gpuExtensionsCount, nullptr));
-
-	std::vector<VkExtensionProperties> gpuExtensions(gpuExtensionsCount);
-	vkCheck(vkEnumerateDeviceExtensionProperties(dev, nullptr, &gpuExtensionsCount, gpuExtensions.data()));
-
-	std::set<std::string> requiredExtensionsSet(required_exts.begin(), required_exts.end());
-	
-	for (VkExtensionProperties& gpuExt : gpuExtensions)
-		requiredExtensionsSet.erase(gpuExt.extensionName);
-
-	return requiredExtensionsSet.empty();
-}
-
-void CreateDeviceAndQueues()
-{
-	// "choose" device
-	uint32_t deviceCount = 0;
-	vkCheck(vkEnumeratePhysicalDevices(g_vkInstance, &deviceCount, nullptr));
-	check(deviceCount > 0);
-
-	std::vector<VkPhysicalDevice> devices(deviceCount);
-	vkCheck(vkEnumeratePhysicalDevices(g_vkInstance, &deviceCount, devices.data()));
-
-	std::vector<const char*> requiredGpuExtensions = {
-		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-		VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
-		VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
-		VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
-		VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME
-	};
-
-	for (VkPhysicalDevice dev : devices)
-	{
-		VkPhysicalDeviceProperties gpuProperties;
-		vkGetPhysicalDeviceProperties(dev, &gpuProperties);
-
-		uint32_t formatsCount, presentModesCount;
-		vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(dev, g_vkSurface, &formatsCount, nullptr));
-		vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(dev, g_vkSurface, &presentModesCount, nullptr));
-
-		bool dedicatedGpu = gpuProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
-		bool gpuSupportsAllExtensions = DeviceSupportsExtensions(dev, requiredGpuExtensions);
-		bool gpuSupportsSwapchain = formatsCount && presentModesCount;
-
-		if (dedicatedGpu && gpuSupportsAllExtensions && gpuSupportsSwapchain)
-		{
-			g_PhysicalDevice = dev;
-			break;
-		}
-	}
-	check(g_PhysicalDevice);
-
-	VkPhysicalDeviceFeatures gpuFeatures; // unused
-	vkGetPhysicalDeviceFeatures(g_PhysicalDevice, &gpuFeatures);
-
-	// setup queues
-	uint32_t queueFamilyCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &queueFamilyCount, nullptr);
-
-	std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-	vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &queueFamilyCount, queueFamilies.data());
-
-	std::optional<uint32_t> graphicsQueueFamilyIndex;
-	std::optional<uint32_t> presentQueueFamilyIndex;
-
-	for (uint32_t i = 0; i < (size_t)queueFamilies.size(); i++)
-	{
-		VkQueueFamilyProperties& family = queueFamilies[i];
-
-		int queueCount = family.queueCount; // unused
-
-		bool hasGraphics = family.queueFlags & VK_QUEUE_GRAPHICS_BIT;
-		bool hasCompute = family.queueFlags & VK_QUEUE_COMPUTE_BIT; // unused
-		bool hasTransfer = family.queueFlags & VK_QUEUE_TRANSFER_BIT; // unused
-
-		VkBool32 canPresent = VK_FALSE;
-		vkCheck(vkGetPhysicalDeviceSurfaceSupportKHR(g_PhysicalDevice, i, g_vkSurface, &canPresent));
-
-		if (!graphicsQueueFamilyIndex && hasGraphics)
-			graphicsQueueFamilyIndex = i; // found family that supports graphics
-
-		if (!presentQueueFamilyIndex && canPresent)
-			presentQueueFamilyIndex = i; // found family that supports present
-
-		if (graphicsQueueFamilyIndex && presentQueueFamilyIndex)
-			break;
-	}
-
-	check(graphicsQueueFamilyIndex && presentQueueFamilyIndex);
-	g_GraphicsQueueFamilyIndex = graphicsQueueFamilyIndex.value();
-
-	// a single family will most likely support both... and we'll end up having only 1 queue index (same for both -> not added in the set)
-	// guarda VulkanCapsViewer per capire come sono strutturate ste famiglie...
-	std::set<uint32_t> uniqueFamilies = {
-		graphicsQueueFamilyIndex.value(),
-		presentQueueFamilyIndex.value()
-	};
-
-	std::vector<VkDeviceQueueCreateInfo> queueInfos;
-	queueInfos.reserve(uniqueFamilies.size());
-
-	float queuePriority = 1.0f;
-	for (uint32_t family : uniqueFamilies)
-	{
-		VkDeviceQueueCreateInfo queueCreateInfo = {};
-		queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-		queueCreateInfo.queueFamilyIndex = family;
-		queueCreateInfo.queueCount = 1;
-		queueCreateInfo.pQueuePriorities = &queuePriority;
-		queueInfos.push_back(queueCreateInfo);
-	}
-
-	VkPhysicalDeviceVulkan13Features deviceFeatures_13 = {};
-	deviceFeatures_13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-	deviceFeatures_13.dynamicRendering = true;
-	deviceFeatures_13.synchronization2 = true;
-
-	VkPhysicalDeviceVulkan12Features deviceFeatures_12 = {};
-	deviceFeatures_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-	deviceFeatures_12.pNext = &deviceFeatures_13;
-	deviceFeatures_12.bufferDeviceAddress = true;
-	deviceFeatures_12.descriptorIndexing = true;
-
-	VkDeviceCreateInfo deviceCreateInfo = {};
-	deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-	deviceCreateInfo.pNext = &deviceFeatures_12; // because of pNext
-	deviceCreateInfo.pQueueCreateInfos = queueInfos.data();
-	deviceCreateInfo.queueCreateInfoCount = (uint32_t)queueInfos.size();
-	deviceCreateInfo.pEnabledFeatures = nullptr; // because of pNext
-	deviceCreateInfo.enabledExtensionCount = (uint32_t)requiredGpuExtensions.size();
-	deviceCreateInfo.ppEnabledExtensionNames = requiredGpuExtensions.data();
-
-	VkResult deviceCreationRes = vkCreateDevice(g_PhysicalDevice, &deviceCreateInfo, nullptr, &g_Device);
-	vkCheck(deviceCreationRes);
-
-	g_Queues.reserve(queueInfos.size());
-	for (uint32_t family : uniqueFamilies)
-	{
-		VkQueue& queue = g_Queues.emplace_back();
-		vkGetDeviceQueue(g_Device, family, 0, &queue);
-
-		if (family == g_GraphicsQueueFamilyIndex)
-			g_GraphicsQueueIndex = family;
-	}
-
-	g_MainDeletionQueue.PushBack([]() {
-		vkDestroyDevice(g_Device, nullptr);
-	});
-}
-
 void CreateSwapchain()
 {
+	VkDevice device = g_RendererContext.GetDevice();
+	VkPhysicalDevice gpu = g_RendererContext.GetGPU();
+	VkSurfaceKHR surface = g_RendererContext.GetSurface();
+
 	constexpr VkFormat TARGET_FORMAT = VK_FORMAT_B8G8R8A8_UNORM; // _SRGB is washed out?!?
 	constexpr VkColorSpaceKHR TARGET_COLOR_SPACE = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	constexpr VkPresentModeKHR TARGET_PRESENT_MODE = VK_PRESENT_MODE_IMMEDIATE_KHR;
@@ -442,16 +128,16 @@ void CreateSwapchain()
 	std::vector<VkPresentModeKHR> availablePresentModes;
 
 	uint32_t formatCount;
-	vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(g_PhysicalDevice, g_vkSurface, &formatCount, nullptr));
+	vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &formatCount, nullptr));
 	availableFormats.resize(formatCount);
-	vkGetPhysicalDeviceSurfaceFormatsKHR(g_PhysicalDevice, g_vkSurface, &formatCount, availableFormats.data());
+	vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &formatCount, availableFormats.data());
 
 	uint32_t presentModeCount;
-	vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(g_PhysicalDevice, g_vkSurface, &presentModeCount, nullptr));
+	vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &presentModeCount, nullptr));
 	availablePresentModes.resize(presentModeCount);
-	vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(g_PhysicalDevice, g_vkSurface, &presentModeCount, availablePresentModes.data()));
+	vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &presentModeCount, availablePresentModes.data()));
 
-	vkCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_PhysicalDevice, g_vkSurface, &surfaceCapabilites));
+	vkCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &surfaceCapabilites));
 
 	g_SwapchainSurfaceFormat = availableFormats[0]; // default
 	g_SwapchainExtent = surfaceCapabilites.currentExtent; // default
@@ -489,7 +175,7 @@ void CreateSwapchain()
 
 	VkSwapchainCreateInfoKHR swapchainInfo = {};
 	swapchainInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-	swapchainInfo.surface = g_vkSurface;
+	swapchainInfo.surface = surface;
 	swapchainInfo.minImageCount = surfaceCapabilites.minImageCount + 1;
 	swapchainInfo.imageFormat = g_SwapchainSurfaceFormat.format;
 	swapchainInfo.imageColorSpace = g_SwapchainSurfaceFormat.colorSpace;
@@ -503,13 +189,13 @@ void CreateSwapchain()
 	swapchainInfo.clipped = VK_TRUE; // pixel nascosti da altre fineste, di nuovo chissene
 	swapchainInfo.oldSwapchain = VK_NULL_HANDLE; // non stiamo mica fancendo un resize...
 
-	VkResult swapchainCreateRes = vkCreateSwapchainKHR(g_Device, &swapchainInfo, nullptr, &g_Swapchain);
+	VkResult swapchainCreateRes = vkCreateSwapchainKHR(device, &swapchainInfo, nullptr, &g_Swapchain);
 	vkCheck(swapchainCreateRes);
 
 	uint32_t swapchainImageCount; // noi abbiamo solo specificato il numero minimo, potrebbero essere di piu, quindi chiediamo
-	vkCheck(vkGetSwapchainImagesKHR(g_Device, g_Swapchain, &swapchainImageCount, nullptr));
+	vkCheck(vkGetSwapchainImagesKHR(device, g_Swapchain, &swapchainImageCount, nullptr));
 	g_SwapchainImages.resize(swapchainImageCount);
-	vkCheck(vkGetSwapchainImagesKHR(g_Device, g_Swapchain, &swapchainImageCount, g_SwapchainImages.data()));
+	vkCheck(vkGetSwapchainImagesKHR(device, g_Swapchain, &swapchainImageCount, g_SwapchainImages.data()));
 
 	VkImageViewCreateInfo imageViewInfo = {};
 	imageViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -531,22 +217,22 @@ void CreateSwapchain()
 	{
 		// image view
 		imageViewInfo.image = g_SwapchainImages[i];
-		vkCheck(vkCreateImageView(g_Device, &imageViewInfo, nullptr, &g_SwapchainImageViews[i]));
+		vkCheck(vkCreateImageView(device, &imageViewInfo, nullptr, &g_SwapchainImageViews[i]));
 		
 		// semaphore
 		VkSemaphoreCreateInfo semaphoreInfo = {};
 		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-		vkCheck(vkCreateSemaphore(g_Device, &semaphoreInfo, nullptr, &g_SwapchainSemaphores[i]));
+		vkCheck(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &g_SwapchainSemaphores[i]));
 	}
 
-	g_MainDeletionQueue.PushBack([]() {
+	g_RendererContext.QueueShutdownFunc([device]() {
 		for (int i = 0; i < g_SwapchainImages.size(); i++)
 		{
-			vkDestroyImageView(g_Device, g_SwapchainImageViews[i], nullptr);
-			vkDestroySemaphore(g_Device, g_SwapchainSemaphores[i], nullptr);
+			vkDestroyImageView(device, g_SwapchainImageViews[i], nullptr);
+			vkDestroySemaphore(device, g_SwapchainSemaphores[i], nullptr);
 		}
 
-		vkDestroySwapchainKHR(g_Device, g_Swapchain, nullptr);
+		vkDestroySwapchainKHR(device, g_Swapchain, nullptr);
 	});
 }
 
@@ -603,6 +289,8 @@ void CreateSwapchain()
 
 void CreatePipeline()
 {
+	VkDevice device = g_RendererContext.GetDevice();
+
 	// compute pipeline
 	{
 		VkPushConstantRange computePushConstant0;
@@ -615,7 +303,7 @@ void CreatePipeline()
 		computeBuilder.m_Descriptors = { g_DescriptorSetLayout0 };
 		computeBuilder.m_PushConstants = { computePushConstant0 };
 
-		g_ComputePipeline = computeBuilder.Build(g_Device);
+		g_ComputePipeline = computeBuilder.Build(device);
 	}
 
 	// graphics pipeline 0
@@ -626,7 +314,7 @@ void CreatePipeline()
 		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
 		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
 
-		g_GraphicsPipeline0 = graphicsBuilder.Build(g_Device);
+		g_GraphicsPipeline0 = graphicsBuilder.Build(device);
 	}
 
 	// graphics pipeline 1
@@ -650,19 +338,19 @@ void CreatePipeline()
 		*/
 		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_GREATER_OR_EQUAL, DEPTH_FORMAT, true };
 
-		g_GraphicsPipeline1 = graphicsBuilder.Build(g_Device);
+		g_GraphicsPipeline1 = graphicsBuilder.Build(device);
 	}
 
 	// cleanup
-	g_MainDeletionQueue.PushBack([]() {
-		vkDestroyPipeline(g_Device, g_GraphicsPipeline1.pipeline, nullptr);
-		vkDestroyPipelineLayout(g_Device, g_GraphicsPipeline1.layout, nullptr);
+	g_RendererContext.QueueShutdownFunc([device]() {
+		vkDestroyPipeline(device, g_GraphicsPipeline1.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GraphicsPipeline1.layout, nullptr);
 
-		vkDestroyPipeline(g_Device, g_GraphicsPipeline0.pipeline, nullptr);
-		vkDestroyPipelineLayout(g_Device, g_GraphicsPipeline0.layout, nullptr);
+		vkDestroyPipeline(device, g_GraphicsPipeline0.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GraphicsPipeline0.layout, nullptr);
 
-		vkDestroyPipeline(g_Device, g_ComputePipeline.pipeline, nullptr);
-		vkDestroyPipelineLayout(g_Device, g_ComputePipeline.layout, nullptr);
+		vkDestroyPipeline(device, g_ComputePipeline.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_ComputePipeline.layout, nullptr);
 	});
 }
 
@@ -697,11 +385,13 @@ void CreateCommands()
 	commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 	commandPoolInfo.pNext = nullptr;
 	commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-	commandPoolInfo.queueFamilyIndex = g_GraphicsQueueFamilyIndex;
+	commandPoolInfo.queueFamilyIndex = g_RendererContext.GetRendererDevice().GetGraphicsQueueFamilyIndex();
+
+	VkDevice device = g_RendererContext.GetDevice();
 
 	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
 	{
-		vkCheck(vkCreateCommandPool(g_Device, &commandPoolInfo, nullptr, &g_FramesData[i].commandPool));
+		vkCheck(vkCreateCommandPool(device, &commandPoolInfo, nullptr, &g_FramesData[i].commandPool));
 
 		// command buffer for gfx
 		VkCommandBufferAllocateInfo cmdAllocInfo = {};
@@ -710,25 +400,25 @@ void CreateCommands()
 		cmdAllocInfo.commandPool = g_FramesData[i].commandPool;
 		cmdAllocInfo.commandBufferCount = 1; // ne abbiamo solo uno: VkCommandBuffer::commandBuffer
 		cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		vkCheck(vkAllocateCommandBuffers(g_Device, &cmdAllocInfo, &g_FramesData[i].commandBuffer));
+		vkCheck(vkAllocateCommandBuffers(device, &cmdAllocInfo, &g_FramesData[i].commandBuffer));
 
 		VkFenceCreateInfo fenceInfo = {};
 		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // inizia a flaggarla segnalata, altrimneti se facciamo un wait prima di segnalarla ci blocchiamo (primo wait senza averla toccata dopo la creazione)
-		vkCheck(vkCreateFence(g_Device, &fenceInfo, nullptr, &g_FramesData[i].fence));
+		vkCheck(vkCreateFence(device, &fenceInfo, nullptr, &g_FramesData[i].fence));
 
 		VkSemaphoreCreateInfo semaphoreInfo = {};
 		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-		vkCheck(vkCreateSemaphore(g_Device, &semaphoreInfo, nullptr, &g_FramesData[i].swapchainSemaphore));
+		vkCheck(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &g_FramesData[i].swapchainSemaphore));
 	}
 
 	// roba per la roba immediata...
 	VkFenceCreateInfo fenceInfo = {};
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // inizia a flaggarla segnalata, altrimneti se facciamo un wait prima di segnalarla ci blocchiamo (primo wait senza averla toccata dopo la creazione)
-	vkCheck(vkCreateFence(g_Device, &fenceInfo, nullptr, &g_ImmediateFence));
+	vkCheck(vkCreateFence(device, &fenceInfo, nullptr, &g_ImmediateFence));
 
-	vkCheck(vkCreateCommandPool(g_Device, &commandPoolInfo, nullptr, &g_ImmediateCommandPool)); // sempre graphics a quanto pare
+	vkCheck(vkCreateCommandPool(device, &commandPoolInfo, nullptr, &g_ImmediateCommandPool)); // sempre graphics a quanto pare
 
 	VkCommandBufferAllocateInfo cmdAllocInfo = {};
 	cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -736,22 +426,22 @@ void CreateCommands()
 	cmdAllocInfo.commandPool = g_ImmediateCommandPool;
 	cmdAllocInfo.commandBufferCount = 1;
 	cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	vkCheck(vkAllocateCommandBuffers(g_Device, &cmdAllocInfo, &g_ImmediateCmdBuffer));
+	vkCheck(vkAllocateCommandBuffers(device, &cmdAllocInfo, &g_ImmediateCmdBuffer));
 
-	g_MainDeletionQueue.PushBack([]() {
+	g_RendererContext.QueueShutdownFunc([device]() {
 
 		// roba immediata
-		vkDestroyCommandPool(g_Device, g_ImmediateCommandPool, nullptr); // distrugge tutti i command buffer allocati con lui
-		vkDestroyFence(g_Device, g_ImmediateFence, nullptr);
+		vkDestroyCommandPool(device, g_ImmediateCommandPool, nullptr); // distrugge tutti i command buffer allocati con lui
+		vkDestroyFence(device, g_ImmediateFence, nullptr);
 
 		// cmd / fence e semafori dei frame
 		for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
 
-			vkDestroyCommandPool(g_Device, g_FramesData[i].commandPool, nullptr); // distrugge tutti i command buffer allocati con lui
+			vkDestroyCommandPool(device, g_FramesData[i].commandPool, nullptr); // distrugge tutti i command buffer allocati con lui
 
 			//destroy sync objects
-			vkDestroyFence(g_Device, g_FramesData[i].fence, nullptr);
-			vkDestroySemaphore(g_Device, g_FramesData[i].swapchainSemaphore, nullptr);
+			vkDestroyFence(device, g_FramesData[i].fence, nullptr);
+			vkDestroySemaphore(device, g_FramesData[i].swapchainSemaphore, nullptr);
 
 			g_FramesData[i].deletionQueue.Flush();
 		}
@@ -760,6 +450,8 @@ void CreateCommands()
 
 void CreateRenderImage()
 {
+	VkDevice device = g_RendererContext.GetDevice();
+
 	// draw image
 	{
 		VkUtils::ImageDesc imageDesc = {
@@ -771,7 +463,7 @@ void CreateRenderImage()
 			.aspect = VK_IMAGE_ASPECT_COLOR_BIT
 		};
 
-		g_DrawImage = VkUtils::CreateImage(g_Device, imageDesc);
+		g_DrawImage = VkUtils::CreateImage(device, imageDesc);
 	}
 
 	// draw image depth
@@ -785,17 +477,19 @@ void CreateRenderImage()
 			.aspect = VK_IMAGE_ASPECT_DEPTH_BIT
 		};
 
-		g_DrawImageDepth = VkUtils::CreateImage(g_Device, imageDesc);
+		g_DrawImageDepth = VkUtils::CreateImage(device, imageDesc);
 	}
 
-	g_MainDeletionQueue.PushBack([]() {
-		VkUtils::DestroyImage(g_Device, g_DrawImageDepth);
-		VkUtils::DestroyImage(g_Device, g_DrawImage); 
+	g_RendererContext.QueueShutdownFunc([device]() {
+		VkUtils::DestroyImage(device, g_DrawImageDepth);
+		VkUtils::DestroyImage(device, g_DrawImage);
 	});
 }
 
 void CreateDescriptors()
 {
+	VkDevice device = g_RendererContext.GetDevice();
+
 	// questo logicamente e' piu un std::set che un std::vector
 	// infatti VkDescriptorPoolCreateInfo fa la somma di tutti PoolSize con lo stesso type...
 	std::array<VkDescriptorPoolSize, 1> poolSizes; 
@@ -809,7 +503,7 @@ void CreateDescriptors()
 	poolInfo.poolSizeCount = (uint32_t)poolSizes.size();
 	poolInfo.pPoolSizes = poolSizes.data();
 
-	vkCheck(vkCreateDescriptorPool(g_Device, &poolInfo, nullptr, &g_DescriptorPool));
+	vkCheck(vkCreateDescriptorPool(device, &poolInfo, nullptr, &g_DescriptorPool));
 
 	// crea i bindings (gli struct / immagini nelle shader)
 	std::array<VkDescriptorSetLayoutBinding, 1> bindings;
@@ -825,7 +519,7 @@ void CreateDescriptors()
 	layoutInfo.pBindings = bindings.data();
 	layoutInfo.bindingCount = (uint32_t)bindings.size();
 
-	vkCheck(vkCreateDescriptorSetLayout(g_Device, &layoutInfo, nullptr, &g_DescriptorSetLayout0));
+	vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_DescriptorSetLayout0));
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -833,7 +527,7 @@ void CreateDescriptors()
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &g_DescriptorSetLayout0;
 
-	vkCheck(vkAllocateDescriptorSets(g_Device, &allocInfo, &g_DescriptorSet0));
+	vkCheck(vkAllocateDescriptorSets(device, &allocInfo, &g_DescriptorSet0));
 
 	// binding... questo lo facciamo una sola volta, ma viene fatto piu spesso
 	VkDescriptorImageInfo imgInfo = {};
@@ -849,16 +543,18 @@ void CreateDescriptors()
 	drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	drawImageWrite.pImageInfo = &imgInfo;
 
-	vkUpdateDescriptorSets(g_Device, 1, &drawImageWrite, 0, nullptr);
+	vkUpdateDescriptorSets(device, 1, &drawImageWrite, 0, nullptr);
 
-	g_MainDeletionQueue.PushBack([]() {
-		vkDestroyDescriptorPool(g_Device, g_DescriptorPool, nullptr);
-		vkDestroyDescriptorSetLayout(g_Device, g_DescriptorSetLayout0, nullptr);
+	g_RendererContext.QueueShutdownFunc([device]() {
+		vkDestroyDescriptorPool(device, g_DescriptorPool, nullptr);
+		vkDestroyDescriptorSetLayout(device, g_DescriptorSetLayout0, nullptr);
 	});
 }
 
 void InitImgui()
 {
+	VkDevice device = g_RendererContext.GetDevice();
+
 	// 1: create descriptor pool for IMGUI
 	//  the size of the pool is very oversize, but it's copied from imgui demo
 	//  itself.
@@ -884,7 +580,7 @@ void InitImgui()
 	pool_info.pPoolSizes = pool_sizes;
 
 	VkDescriptorPool imgui_pool;
-	vkCheck(vkCreateDescriptorPool(g_Device, &pool_info, nullptr, &imgui_pool));
+	vkCheck(vkCreateDescriptorPool(device, &pool_info, nullptr, &imgui_pool));
 
 	// 2: initialize imgui library
 
@@ -897,10 +593,10 @@ void InitImgui()
 
 	// this initializes imgui for Vulkan
 	ImGui_ImplVulkan_InitInfo init_info = {};
-	init_info.Instance = g_vkInstance;
-	init_info.PhysicalDevice = g_PhysicalDevice;
-	init_info.Device = g_Device;
-	init_info.Queue = g_Queues[g_GraphicsQueueIndex];
+	init_info.Instance = g_RendererContext.GetInstance();
+	init_info.PhysicalDevice = g_RendererContext.GetGPU();
+	init_info.Device = device;
+	init_info.Queue = g_RendererContext.GetRendererDevice().GetGraphicsQueue();
 	init_info.DescriptorPool = imgui_pool;
 	init_info.MinImageCount = 3;
 	init_info.ImageCount = 3;
@@ -916,15 +612,17 @@ void InitImgui()
 
 	ImGui::StyleColorsDark();
 	
-	g_MainDeletionQueue.PushBack([imgui_pool]() {
+	g_RendererContext.QueueShutdownFunc([imgui_pool, device]() {
 		ImGui_ImplVulkan_Shutdown();
-		vkDestroyDescriptorPool(g_Device, imgui_pool, nullptr);
+		vkDestroyDescriptorPool(device, imgui_pool, nullptr);
 	});
 }
 
 void ImmediateSubmit(std::function<void(VkCommandBuffer)> func)
 {
-	vkCheck(vkResetFences(g_Device, 1, &g_ImmediateFence));
+	VkDevice device = g_RendererContext.GetDevice();
+
+	vkCheck(vkResetFences(device, 1, &g_ImmediateFence));
 	vkCheck(vkResetCommandBuffer(g_ImmediateCmdBuffer, 0));
 
 	// begin the command buffer recording. We will use this command buffer exactly
@@ -944,83 +642,178 @@ void ImmediateSubmit(std::function<void(VkCommandBuffer)> func)
 
 	// submit command buffer to the queue and execute it.
 	//  _renderFence will now block until the graphic commands finish execution
-	VkQueue graphicsQueue = g_Queues[g_GraphicsQueueIndex];
-	vkCheck(vkQueueSubmit2(graphicsQueue, 1, &submitInfo, g_ImmediateFence));
+	vkCheck(vkQueueSubmit2(g_RendererContext.GetRendererDevice().GetGraphicsQueue(), 1, &submitInfo, g_ImmediateFence));
 
-	vkCheck(vkWaitForFences(g_Device, 1, &g_ImmediateFence, true, 9999999999));
+	vkCheck(vkWaitForFences(device, 1, &g_ImmediateFence, true, 9999999999));
 }
 
-MeshData LoadMesh(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)
+struct LoadingState
 {
-	MeshData outMeshData = {};
+	u32 currentlyLoaded;
+	u32 loadTarget;
+};
 
-	size_t vertexBufferSize = vertices.size() * sizeof(Vertex);
-	size_t indexBufferSize = indices.size() * sizeof(uint32_t);
-
-	// crea index buffer & vertex buffer
-	outMeshData.vertexBuffer = VkUtils::CreateBuffer(g_Device, vertexBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-		| VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-	outMeshData.indexBuffer = VkUtils::CreateBuffer(g_Device, indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-	// prendi il puntatore al vertex buffer
-	VkBufferDeviceAddressInfo deviceAdressInfo = {};
-	deviceAdressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	deviceAdressInfo.buffer = outMeshData.vertexBuffer.buffer;
-	outMeshData.vertexBufferAddress = vkGetBufferDeviceAddress(g_Device, &deviceAdressInfo);
-
-	VkUtils::Buffer tmpStagingBuffer = VkUtils::CreateBuffer(g_Device, vertexBufferSize + indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT
-		, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-	// copia i dati da cpu a gpu
-	void* data = 0;
-	vkCheck(vkMapMemory(g_Device, tmpStagingBuffer.memory, 0, vertexBufferSize + indexBufferSize, 0, &data));
-	memcpy(data, vertices.data(), vertexBufferSize); // copy vertex data to staging buffer
-	memcpy((char*)data + vertexBufferSize, indices.data(), indexBufferSize); // copy index data to staging buffer
-	vkUnmapMemory(g_Device, tmpStagingBuffer.memory);
-
-	ImmediateSubmit([&](VkCommandBuffer cmd) { // mega stallo evvai
-		VkBufferCopy vertexCopy{ 0 };
-		vertexCopy.dstOffset = 0;
-		vertexCopy.srcOffset = 0;
-		vertexCopy.size = vertexBufferSize;
-		vkCmdCopyBuffer(cmd, tmpStagingBuffer.buffer, outMeshData.vertexBuffer.buffer, 1, &vertexCopy);
-
-		VkBufferCopy indexCopy{ 0 };
-		indexCopy.dstOffset = 0;
-		indexCopy.srcOffset = vertexBufferSize;
-		indexCopy.size = indexBufferSize;
-		vkCmdCopyBuffer(cmd, tmpStagingBuffer.buffer, outMeshData.indexBuffer.buffer, 1, &indexCopy);
-		});
-
-	// adesso lo distruggiamo... ma sarebbe utile avere uno staging buffer "statico" per questo genere di cose... non ha senso
-	// crearne uno ogni volta che dobbiamo spostare roba...
-	VkUtils::DestroyBuffer(g_Device, tmpStagingBuffer);
-
-	return outMeshData;
-}
+LoadingState g_LoadingState;
+static std::vector<Mesh*> g_Meshes;
 
 void LoadGeometry()
 {
-	Resource::LoadMesh(std::filesystem::path("assets") / "basicmesh.glb", g_Meshes);
+	std::filesystem::path meshesToLoad[] = {
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb",
+		std::filesystem::path("assets") / "basicmesh.glb"
+	};
 
-	g_MainDeletionQueue.PushBack([]() {
+	constexpr u32 itCount = 4;
 
+	constexpr u32 loadCount = sizeof(meshesToLoad) / sizeof(meshesToLoad[0]);
+	g_LoadingState.loadTarget = loadCount * itCount;
+	g_LoadingState.currentlyLoaded = 0;
+
+	for(u32 j = 0; j < itCount; j++)
+		for (u32 i = 0; i < loadCount; i++)
+		{
+			Mesh* mesh = g_AssetManager.LoadMesh(meshesToLoad[i]);
+			g_Meshes.push_back(mesh);
+		}
+
+	g_RendererContext.QueueShutdownFunc([]() {
 		for (auto& mesh : g_Meshes)
 		{
-			VkUtils::DestroyBuffer(g_Device, mesh.data.vertexBuffer);
-			VkUtils::DestroyBuffer(g_Device, mesh.data.indexBuffer);
+			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), mesh->GetVertexBuffer());
+			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), mesh->GetIndexBuffer());
 		}
 	});
 }
-
+ 
 void InitVulkan()
 {
-	CreateInstance();
-	CreateSurfaceWin32(); // glfwCreateWindowSurface()
-	CreateDeviceAndQueues();
+	HWND mainWnd = glfwGetWin32Window(g_Window);
+	g_RendererContext.Init((void*)mainWnd);
+	
+	VkUtils::Init(g_RendererContext.GetGPU());
 
-	VkUtils::Init(g_PhysicalDevice);
+	g_ResourceFactory.Init(&g_RendererContext);
 	
 	CreateSwapchain();
 	CreateCommands();
@@ -1032,23 +825,31 @@ void InitVulkan()
 	CreatePipeline();
 	//CreateFramebuffers(); dynamic_rendering yeee
 
-	LoadGeometry();
+	//LoadGeometry();
 }
 
 void ShutdownVulkan()
 {
-	//make sure the gpu has stopped doing its things				
-	vkDeviceWaitIdle(g_Device);
-	//flush the global deletion queue
-	g_MainDeletionQueue.Flush();
+	vkCheck(vkDeviceWaitIdle(g_RendererContext.GetDevice()));
+
+	g_ResourceFactory.Shutdown();
+	g_RendererContext.Shutdown();
 }
 
 void ImGuii()
 {
-	ImGui::Begin("Color (push const)");	
+	ImGui::Begin("Roba");
 
-	ImGui::ColorEdit4("Color start", glm::value_ptr(g_ColorPushConst.colorStart));
-	ImGui::ColorEdit4("Color end", glm::value_ptr(g_ColorPushConst.colorEnd));
+	ImVec4 lblColor = g_LoadingState.currentlyLoaded == g_LoadingState.loadTarget ? ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
+	ImGui::TextColored(lblColor, "Scene loading: %d/%d", g_LoadingState.currentlyLoaded, g_LoadingState.loadTarget);
+
+	if (ImGui::Button("Load geometry async"))
+		LoadGeometry();
+
+	ImGui::Separator();
+
+	ImGui::ColorEdit4("Color (push const) start", glm::value_ptr(g_ColorPushConst.colorStart));
+	ImGui::ColorEdit4("Color (push const) end", glm::value_ptr(g_ColorPushConst.colorEnd));
 	
 	ImGui::Separator();
 
@@ -1059,17 +860,30 @@ void ImGuii()
 	ImGui::End();
 }
 
+void Update()
+{
+	//LOG_WARN("New update");
+	if (g_LoadingState.currentlyLoaded < g_LoadingState.loadTarget)
+	{
+		u32 loadedAssets = g_AssetManager.CheckLoadedAssets();
+		g_LoadingState.currentlyLoaded += loadedAssets;
+	}
+}
+
 void NewFrame()
 {
+	LOG_WARN("New frame!");
+	VkDevice device = g_RendererContext.GetDevice();
+
 	FrameData& frameData = g_FramesData[g_FrameIndex];
 
 	// wait until the gpu has finished rendering the last frame. Timeout of 1 second
 	// se il timeout e' 0 restituisce lo stato corrente della fence
-	vkCheck(vkWaitForFences(g_Device, 1, &frameData.fence, true, 1000000000 /* ns */)); // asepettaq che diventi signaled (nel primo frame si bloccerebbe senza il VK_FENCE_CREATE_SIGNALED_BIT nella craezione)
-	vkCheck(vkResetFences(g_Device, 1, &frameData.fence)); // settala di nuovo unsignaled
+	vkCheck(vkWaitForFences(device, 1, &frameData.fence, true, 1000000000 /* ns */)); // asepettaq che diventi signaled (nel primo frame si bloccerebbe senza il VK_FENCE_CREATE_SIGNALED_BIT nella craezione)
+	vkCheck(vkResetFences(device, 1, &frameData.fence)); // settala di nuovo unsignaled
 
 	uint32_t imageIndex;
-	vkCheck(vkAcquireNextImageKHR(g_Device, g_Swapchain, 1000000000, frameData.swapchainSemaphore, nullptr, &imageIndex));
+	vkCheck(vkAcquireNextImageKHR(device, g_Swapchain, 1000000000, frameData.swapchainSemaphore, nullptr, &imageIndex));
 
 	SwapchainImage swapchainImage = {
 		.image = g_SwapchainImages[imageIndex],
@@ -1155,10 +969,14 @@ void NewFrame()
 	VkRenderingInfo renderInfo1 = VkUtils::RenderingInfo(g_SwapchainExtent, &drawImageColorAttachment, &drawImageDepth);
 	vkCmdBeginRendering(cmd, &renderInfo1);
 
-	std::vector<MeshResource> toDraw = { g_Meshes[2] };
-
-	for (auto& mesh : toDraw)
+	for (auto& mesh : g_Meshes)
 	{
+		if (!mesh->IsLoaded())
+		{
+			//LOG_ERR("Mesh is not loaded yet, skipping render");
+			continue;
+		}
+
 		glm::mat4 rotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
 			* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
 			* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
@@ -1169,17 +987,21 @@ void NewFrame()
 		glm::vec3 eyePos = glm::vec3(0.0f, 0.0f, -3.0f);
 		glm::mat4 view = glm::lookAtLH(eyePos, eyeFocus + eyePos, glm::vec3(0.0f, 1.0f, 0.0f));
 
-		glm::mat4 proj = glm::perspectiveLH(glm::radians(70.0f), (float)g_SwapchainExtent.width / (float)g_SwapchainExtent.height, 10000.f, 0.1f);
+		glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(70.0f), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
 
 		MeshPushConstant meshPushConst;
 		meshPushConst.worldMatrix = proj * view * model;
-		meshPushConst.vertexBuffer = mesh.data.vertexBufferAddress;
-
+		meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
 		vkCmdPushConstants(cmd, g_GraphicsPipeline1.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
-		vkCmdBindIndexBuffer(cmd, mesh.data.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+		
+		vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
 
-		for(auto& surface : mesh.surfaces)
-			vkCmdDrawIndexed(cmd, surface.count, 1, surface.startIndex, 0, 0);
+		const auto& submeshes = mesh->GetSubmeshes();
+		for (int i = 0; i < submeshes.size(); i++)
+		{
+			const Submesh& submesh = submeshes[i];
+			vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+		}
 	}
 
 	vkCmdEndRendering(cmd);
@@ -1217,10 +1039,10 @@ void NewFrame()
 
 	VkSubmitInfo2 submit = VkUtils::SubmitInfo(&cmdInfo, &signalInfo, &waitInfo);
 
-	// launch cmd on graphics queue
-	VkQueue graphicsQueue = g_Queues[g_GraphicsQueueIndex];
+	VkQueue gfxQueue = g_RendererContext.GetRendererDevice().GetGraphicsQueue();
 
-	vkCheck(vkQueueSubmit2(graphicsQueue, 1, &submit, frameData.fence));
+	// launch cmd on graphics queue
+	vkCheck(vkQueueSubmit2(gfxQueue, 1, &submit, frameData.fence));
 
 	// present
 	VkPresentInfoKHR presentInfo = {};
@@ -1230,20 +1052,24 @@ void NewFrame()
 	presentInfo.pWaitSemaphores = &swapchainImage.presentSemaphore;
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pImageIndices = &imageIndex;
-	vkCheck(vkQueuePresentKHR(graphicsQueue, &presentInfo));
+	vkCheck(vkQueuePresentKHR(gfxQueue, &presentInfo));
 
 	g_FrameIndex = (g_FrameIndex + 1) % FRAMES_IN_FLIGHT;
 }
 
 int main()
 {
+	LOG_INFO("Starting!");
+
 	check(glfwInit() == GLFW_TRUE);
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	g_Window = glfwCreateWindow(1100, 720, "Vulkan!!!", nullptr, nullptr);
+	g_Window = glfwCreateWindow(1400, 900, "Vulkan!!!", nullptr, nullptr);
 
 	InitVulkan();
 	InitImgui();
+	
+	g_AssetManager.Init(8);
 
 	while (!glfwWindowShouldClose(g_Window))
 	{
@@ -1253,11 +1079,15 @@ int main()
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
+		Update();
 		NewFrame();
 	}
 
+	g_AssetManager.Shutdown();
 	ShutdownVulkan();
 
 	glfwDestroyWindow(g_Window);
 	glfwTerminate();
+
+	LOG_INFO("Finished!");
 }

@@ -73,11 +73,12 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <SDLCheck>true</SDLCheck>
+      <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -89,11 +90,12 @@
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <SDLCheck>true</SDLCheck>
+      <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -103,11 +105,12 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <SDLCheck>true</SDLCheck>
+      <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -119,25 +122,33 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
-      <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <SDLCheck>true</SDLCheck>
+      <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <ConformanceMode>true</ConformanceMode>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)libs;C:\VulkanSDK\1.4.313.1\Lib;</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\AssetManager.cpp" />
+    <ClCompile Include="src\Core\Debug.cpp" />
     <ClCompile Include="src\Main.cpp" />
-    <ClCompile Include="src\PipelineBuilder.cpp" />
-    <ClCompile Include="src\Resource.cpp" />
-    <ClCompile Include="src\Utils.cpp" />
-    <ClCompile Include="src\VkUtils.cpp" />
+    <ClCompile Include="src\Renderer\PipelineBuilder.cpp" />
+    <ClCompile Include="src\Engine.cpp" />
+    <ClCompile Include="src\Renderer\RendererContext.cpp" />
+    <ClCompile Include="src\Renderer\Texture.cpp" />
+    <ClCompile Include="src\Renderer\Mesh.cpp" />
+    <ClCompile Include="src\Renderer\ResourceFactory.cpp" />
+    <ClCompile Include="src\Misc\Utils.cpp" />
+    <ClCompile Include="src\Renderer\VkUtils.cpp" />
     <ClCompile Include="vendor\fastgltf\src\base64.cpp" />
     <ClCompile Include="vendor\fastgltf\src\fastgltf.cpp" />
     <ClCompile Include="vendor\fastgltf\src\fastgltf.ixx" />
@@ -150,15 +161,25 @@
     <ClCompile Include="vendor\imgui\imgui_tables.cpp" />
     <ClCompile Include="vendor\imgui\imgui_widgets.cpp" />
     <ClCompile Include="vendor\simdjson\simdjson.cpp" />
+    <ClCompile Include="vendor\stb\stb_image.cpp" />
     <ClCompile Include="vendor\vkb\VkBootstrap.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Core.h" />
-    <ClInclude Include="src\CoreMinimal.h" />
-    <ClInclude Include="src\PipelineBuilder.h" />
-    <ClInclude Include="src\Resource.h" />
-    <ClInclude Include="src\Utils.h" />
-    <ClInclude Include="src\VkUtils.h" />
+    <ClInclude Include="src\AssetManager.h" />
+    <ClInclude Include="src\Async\TaskPool.h" />
+    <ClInclude Include="src\Core\Core.h" />
+    <ClInclude Include="src\Core\CoreMinimal.h" />
+    <ClInclude Include="src\Core\Debug.h" />
+    <ClInclude Include="src\Core\Platform.h" />
+    <ClInclude Include="src\Misc\DeletionQueue.h" />
+    <ClInclude Include="src\Renderer\PipelineBuilder.h" />
+    <ClInclude Include="src\Engine.h" />
+    <ClInclude Include="src\Renderer\RendererContext.h" />
+    <ClInclude Include="src\Renderer\Texture.h" />
+    <ClInclude Include="src\Renderer\Mesh.h" />
+    <ClInclude Include="src\Renderer\ResourceFactory.h" />
+    <ClInclude Include="src\Misc\Utils.h" />
+    <ClInclude Include="src\Renderer\VkUtils.h" />
     <ClInclude Include="vendor\fastgltf\include\fastgltf\base64.hpp" />
     <ClInclude Include="vendor\fastgltf\include\fastgltf\core.hpp" />
     <ClInclude Include="vendor\fastgltf\include\fastgltf\dxmath_element_traits.hpp" />
@@ -177,6 +198,7 @@
     <ClInclude Include="vendor\imgui\imstb_textedit.h" />
     <ClInclude Include="vendor\imgui\imstb_truetype.h" />
     <ClInclude Include="vendor\simdjson\simdjson.h" />
+    <ClInclude Include="vendor\stb\stb_image.h" />
     <ClInclude Include="vendor\vkb\VkBootstrap.h" />
     <ClInclude Include="vendor\vkb\VkBootstrapDispatch.h" />
     <ClInclude Include="vendor\vkb\VkBootstrapFeatureChain.h" />

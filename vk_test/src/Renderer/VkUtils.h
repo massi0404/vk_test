@@ -2,8 +2,10 @@
 
 #include <vulkan/vulkan.h>
 
-#include "CoreMinimal.h"
+#include "Core/CoreMinimal.h"
+
 #define vkCheck(VkRes) { check((VkRes) == VK_SUCCESS) } 
+#define vkCheckSlow(VkRes) { CORE_ASSERT((VkRes) == VK_SUCCESS, "Vulkan error!"); }
 
 #include <vector>
 #include <functional>
