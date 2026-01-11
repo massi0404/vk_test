@@ -4,7 +4,7 @@
 
 #include "Core/CoreMinimal.h"
 
-#define vkCheck(VkRes) { check((VkRes) == VK_SUCCESS) } 
+#define vkCheck(VkCall) { VkResult vk_res = (VkCall);  check(vk_res == VK_SUCCESS) } 
 #define vkCheckSlow(VkRes) { CORE_ASSERT((VkRes) == VK_SUCCESS, "Vulkan error!"); }
 
 #include <vector>

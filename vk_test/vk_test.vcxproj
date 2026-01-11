@@ -171,6 +171,8 @@
     <ClInclude Include="src\Core\CoreMinimal.h" />
     <ClInclude Include="src\Core\Debug.h" />
     <ClInclude Include="src\Core\Platform.h" />
+    <ClInclude Include="src\Misc\Timer.h" />
+    <ClInclude Include="src\Math\Math.h" />
     <ClInclude Include="src\Misc\DeletionQueue.h" />
     <ClInclude Include="src\Renderer\PipelineBuilder.h" />
     <ClInclude Include="src\Engine.h" />

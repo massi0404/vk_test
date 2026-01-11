@@ -11,10 +11,12 @@
 	#endif
 
 	#define check(Condition) { if(!(Condition)) DEBUG_BREAK(); }
+	#define verify(Stmt) check(Stmt)	
 
 #else
 
 	#define check(Condition)
+	#define verify(Stmt) Stmt
 
 #endif
 
@@ -25,7 +27,7 @@ void EngineCrash(const char* file, int line, const char* proc, const char* errMs
 	bool cond = (Condition); \
 	if(!cond) \
 	{ \
-		check(0); \
+		/* just for debugbreak if debug*/ check(0); \
 		EngineCrash(__FILE__, __LINE__, __FUNCTION__, ErrorMsg, __VA_ARGS__); \
 	} \
 }
@@ -37,7 +39,7 @@ enum ELogSeverity
 	Error
 };
 
-#define DEBUG_LOG_ENABLED ENGINE_DEBUG
+#define DEBUG_LOG_ENABLED 1
 #if DEBUG_LOG_ENABLED
 	const char* LogSeverityToString(ELogSeverity severity);
 

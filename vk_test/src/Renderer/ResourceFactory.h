@@ -1,11 +1,7 @@
 #pragma once
 
 #include "RendererContext.h"
-
 #include "VkUtils.h"
-
-#include <mutex>
-#include <deque>
 
 #include "Async/TaskPool.h"
 
@@ -28,10 +24,6 @@ struct PendingLoadingRes
 	u64 size;
 	EResourceType type;
 };
-
-typedef u32 ResourceID;
-
-#define IMPL_RESOURCE_GET(ResourceT, Storage) template<> const ResourceT& GetResource(ResourceID id) const { return Storage[id]; }
 
 class ResourceFactory
 {
@@ -70,7 +62,7 @@ private:
 
 	VkUtils::Buffer m_StagingBuffer;
 	void* m_MappedStagingBuffer;
-	VkQueue m_StagingQueue;
+	Queue m_StagingQueue;
 	VkCommandPool m_StagingCmdPool;
 	VkCommandBuffer m_StagingCmd;
 	VkFence m_StagingFence;

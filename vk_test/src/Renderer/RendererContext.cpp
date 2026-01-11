@@ -246,10 +246,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL VkDebugErrorCallback(VkDebugUtilsMessageSe
 	else if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
 		logSeverity = ELogSeverity::Warning;
 
-	if (logSeverity == ELogSeverity::Info && !kLogInfoEvents)
-		return VK_FALSE;
+	if constexpr (!kLogInfoEvents)
+	{
+		if (logSeverity == ELogSeverity::Info)
+			return VK_FALSE;
+	}
 
-	DEBUG_LOG(logSeverity, "Vulkan validation error: %s", pCallbackData->pMessage);
+	DEBUG_LOG(logSeverity, "Vulkan validation says: %s", pCallbackData->pMessage);
 	return VK_FALSE;
 }
 

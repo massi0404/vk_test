@@ -1,9 +1,9 @@
 #include "AssetManager.h"
-#include "Renderer/ResourceFactory.h"
 #include "Engine.h"
+#include "Renderer/ResourceFactory.h"
 #include "Misc/Utils.h"
 
-static AssetUUID s_AssetUUIDCounter = 0; // puzza, ma per il momento fa bene
+static AssetUUID s_AssetUUIDCounter = 0; // puzza, ma per il momento va bene
 
 void AssetManager::Init(u32 asyncLoaderThreads)
 {
@@ -59,22 +59,22 @@ u32 AssetManager::CheckLoadedAssets()
 {
 	std::vector<PendingLoadingRes> loaded;
 	u32 freshlyLoadedCount = g_ResourceFactory.PullLoaded(loaded);
-	
+
 	for (PendingLoadingRes& res : loaded)
 	{
 		switch (res.type)
 		{
-			case EResourceType::Texture:
-				res.texture->m_IsLoaded = true;
-				if (!res.texture->KeepCPUData)
-					res.texture->ClearData();
-				break;
+		case EResourceType::Texture:
+			res.texture->m_IsLoaded = true;
+			if (!res.texture->KeepCPUData)
+				res.texture->ClearData();
+			break;
 
-			case EResourceType::MeshBuffer:
-				res.mesh->m_IsLoaded = true;
-				if (!res.mesh->KeepCPUData)
-					res.mesh->ClearData();
-				break;
+		case EResourceType::MeshBuffer:
+			res.mesh->m_IsLoaded = true;
+			if (!res.mesh->KeepCPUData)
+				res.mesh->ClearData();
+			break;
 		}
 	}
 

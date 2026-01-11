@@ -28,6 +28,8 @@
 #include "AssetManager.h"
 #include "Renderer/Mesh.h"
 
+#include "Math/Math.h"
+
 struct FrameData
 {
 	VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -71,6 +73,8 @@ VkCommandPool g_ImmediateCommandPool = VK_NULL_HANDLE;
 VkCommandBuffer g_ImmediateCmdBuffer = VK_NULL_HANDLE;
 VkFence g_ImmediateFence = VK_NULL_HANDLE;
 
+VkSampler g_TextureSamplerBasic = VK_NULL_HANDLE;
+
 // descriptors
 VkDescriptorPool g_DescriptorPool = VK_NULL_HANDLE;
 
@@ -106,11 +110,14 @@ struct MeshPushConstant
 struct Transform
 {
 	glm::vec3 position = { 0.0f, 0.0f, 0.0f };
-	glm::vec3 rotation = { 0.0f, 0.0f, 0.0f };
+	glm::vec3 rotation = { 0.0f, 0.0f, 0.0f }; 
 	glm::vec3 scale = { 1.0f, 1.0f, 1.0f };
 };
 
 Transform g_MeshTransform;
+
+double g_Time = 0.0;
+float g_FrameTime = 0.0f; // seconds
 
 void CreateSwapchain()
 {
@@ -121,7 +128,7 @@ void CreateSwapchain()
 	constexpr VkFormat TARGET_FORMAT = VK_FORMAT_B8G8R8A8_UNORM; // _SRGB is washed out?!?
 	constexpr VkColorSpaceKHR TARGET_COLOR_SPACE = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	constexpr VkPresentModeKHR TARGET_PRESENT_MODE = VK_PRESENT_MODE_IMMEDIATE_KHR;
-	//constexpr VkPresentModeKHR TARGET_PRESENT_MODE = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+	//constexpr VkPresentModeKHR TARGET_PRESENT_MODE = VK_PRESENT_MODE_FIFO_KHR;
 
 	VkSurfaceCapabilitiesKHR surfaceCapabilites = {};
 	std::vector<VkSurfaceFormatKHR> availableFormats;
@@ -585,11 +592,11 @@ void InitImgui()
 	// 2: initialize imgui library
 
 	// this initializes the core structures of imgui
-	check(ImGui::CreateContext());
+	verify(ImGui::CreateContext());
 
 	// this initializes imgui for SDL
 
-	check(ImGui_ImplGlfw_InitForVulkan(g_Window, true /* chissene per sto test */));
+	verify(ImGui_ImplGlfw_InitForVulkan(g_Window, true /* chissene per sto test */));
 
 	// this initializes imgui for Vulkan
 	ImGui_ImplVulkan_InitInfo init_info = {};
@@ -608,13 +615,26 @@ void InitImgui()
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &g_SwapchainSurfaceFormat.format;
 	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
-	check(ImGui_ImplVulkan_Init(&init_info));
+	verify(ImGui_ImplVulkan_Init(&init_info));
 
 	ImGui::StyleColorsDark();
 	
 	g_RendererContext.QueueShutdownFunc([imgui_pool, device]() {
 		ImGui_ImplVulkan_Shutdown();
 		vkDestroyDescriptorPool(device, imgui_pool, nullptr);
+	});
+}
+
+void CreateTextureSamplers() 
+{
+	VkSamplerCreateInfo sampl = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+	sampl.magFilter = VK_FILTER_NEAREST;
+	sampl.minFilter = VK_FILTER_NEAREST;
+
+	vkCheck(vkCreateSampler(g_RendererContext.GetDevice(), &sampl, nullptr, &g_TextureSamplerBasic));
+
+	g_RendererContext.QueueShutdownFunc([]() {
+		vkDestroySampler(g_RendererContext.GetDevice(), g_TextureSamplerBasic, nullptr);
 	});
 }
 
@@ -654,35 +674,50 @@ struct LoadingState
 };
 
 LoadingState g_LoadingState;
+
 static std::vector<Mesh*> g_Meshes;
+static std::vector<Texture*> g_Textures;
 
 void LoadGeometry()
 {
+	g_MeshTransform.rotation = { -90.0f, 200.0f, 0.0f };
+	g_MeshTransform.position = { 0.0f, -3.0f, 8.0f };
+
 	std::filesystem::path meshesToLoad[] = {
-		std::filesystem::path("assets") / "basicmesh.glb",
-		std::filesystem::path("assets") / "basicmesh.glb",
-		std::filesystem::path("assets") / "basicmesh.glb",
-		std::filesystem::path("assets") / "basicmesh.glb"
+		//std::filesystem::path("assets") / "car.glb"
+		std::filesystem::path("assets") / "diorama.glb"
+		//std::filesystem::path("assets") / "chisa_wuthering_waves.glb"
 	};
 
-	constexpr u32 itCount = 130; // test
+	std::filesystem::path texturesToLoad[] = {
+		std::filesystem::path("assets") / "doom.jpg"
+	};
 
-	constexpr u32 loadCount = sizeof(meshesToLoad) / sizeof(meshesToLoad[0]);
-	g_LoadingState.loadTarget = loadCount * itCount;
-	g_LoadingState.currentlyLoaded = 0;
+	for (const auto& meshPath : meshesToLoad)
+	{
+		Mesh* mesh = g_AssetManager.LoadMesh(meshPath);
+		g_Meshes.push_back(mesh);
+	}
 
-	for(u32 j = 0; j < itCount; j++) // test
-		for (u32 i = 0; i < loadCount; i++)
-		{
-			Mesh* mesh = g_AssetManager.LoadMesh(meshesToLoad[i]);
-			g_Meshes.push_back(mesh);
-		}
+	for (const auto& texturePath : texturesToLoad)
+	{
+		Texture* texture = g_AssetManager.LoadTexture(texturePath);
+		g_Textures.push_back(texture);
+	}
+
+	g_LoadingState.loadTarget = g_Meshes.size() + g_Textures.size();
 
 	g_RendererContext.QueueShutdownFunc([]() {
-		for (auto& mesh : g_Meshes)
+		for (auto mesh : g_Meshes)
 		{
 			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), mesh->GetVertexBuffer());
 			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), mesh->GetIndexBuffer());
+			delete mesh;
+		}
+		for (auto texture : g_Textures)
+		{
+			VkUtils::DestroyImage(g_RendererContext.GetDevice(), texture->GetImage());
+			delete texture;
 		}
 	});
 }
@@ -705,17 +740,22 @@ void InitVulkan()
 	//CreateRenderPass(); dynamic_rendering yeee
 	CreatePipeline();
 	//CreateFramebuffers(); dynamic_rendering yeee
-
-	//LoadGeometry();
+	CreateTextureSamplers();
 }
 
 void ShutdownVulkan()
 {
-	vkCheck(vkDeviceWaitIdle(g_RendererContext.GetDevice()));
-
 	g_ResourceFactory.Shutdown();
+	vkCheck(vkDeviceWaitIdle(g_RendererContext.GetDevice()));
 	g_RendererContext.Shutdown();
 }
+
+static glm::vec3 s_CamPos = { 3.3f, 1.3f, -13.0f };
+static glm::vec3 s_CamRot = { 0.0f, 0.0f, 0.0f };
+static float s_CamSpeed = 10.0f;
+static float s_CamFOV = 60.0f;
+static ImVec2 s_MousePos = {};
+static float s_MouseSens = 0.1f;
 
 void ImGuii()
 {
@@ -723,32 +763,95 @@ void ImGuii()
 
 	ImVec4 lblColor = g_LoadingState.currentlyLoaded == g_LoadingState.loadTarget ? ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
 	ImGui::TextColored(lblColor, "Scene loading: %d/%d", g_LoadingState.currentlyLoaded, g_LoadingState.loadTarget);
-
-	if (ImGui::Button("Load geometry async"))
-		LoadGeometry();
-
-	ImGui::Separator();
-
-	ImGui::ColorEdit4("Color (push const) start", glm::value_ptr(g_ColorPushConst.colorStart));
-	ImGui::ColorEdit4("Color (push const) end", glm::value_ptr(g_ColorPushConst.colorEnd));
 	
+	if (ImGui::Button("Load scene async"))
+	{
+		std::filesystem::path meshPath = std::filesystem::path("assets") / "chisa_wuthering_waves.glb";
+		for (u32 i = 0; i < 16; i++)
+		{
+			Mesh* meshRes = g_AssetManager.LoadMesh(meshPath);
+			g_Meshes.push_back(meshRes);
+		}
+
+		g_LoadingState.loadTarget += 16;
+	}
+
 	ImGui::Separator();
 
-	ImGui::DragFloat3("Location", glm::value_ptr(g_MeshTransform.position), 0.005f);
-	ImGui::DragFloat3("Rotation", glm::value_ptr(g_MeshTransform.rotation), 0.1f);
-	ImGui::DragFloat3("Scale", glm::value_ptr(g_MeshTransform.scale), 0.005f);
+	ImGui::Text("Frametime: %f (%.0f FPS)", g_FrameTime, 1.0f / g_FrameTime);
+
+	ImGui::Separator();
+
+	ImGui::DragFloat3("Cam Location", glm::value_ptr(s_CamPos), 0.005f);
+	ImGui::DragFloat3("Cam Rotation", glm::value_ptr(s_CamRot), 0.1f);
+	ImGui::DragFloat("Cam FOV", &s_CamFOV, 0.001f);
+	ImGui::DragFloat("Cam Speed", &s_CamSpeed, 0.1f);
+
+	ImGui::Separator();
+
+	ImGui::DragFloat3("Model Location", glm::value_ptr(g_MeshTransform.position), 0.005f);
+	ImGui::DragFloat3("Model Rotation", glm::value_ptr(g_MeshTransform.rotation), 0.1f);
+	ImGui::DragFloat3("Model Scale", glm::value_ptr(g_MeshTransform.scale), 0.005f);
 
 	ImGui::End();
 }
 
-void Update()
+void Update(float deltaTime)
 {
-	//LOG_WARN("New update");
+	// asset straming
 	if (g_LoadingState.currentlyLoaded < g_LoadingState.loadTarget)
 	{
 		u32 loadedAssets = g_AssetManager.CheckLoadedAssets();
 		g_LoadingState.currentlyLoaded += loadedAssets;
 	}
+
+	// camera rotation
+	ImVec2 mousePos = ImGui::GetMousePos();
+
+	float lookX = 0.0f;
+	float lookY = 0.0f;
+	
+	if (ImGui::IsMouseDown(ImGuiMouseButton_Right))
+	{
+		lookX = mousePos.x - s_MousePos.x;
+		lookY = mousePos.y - s_MousePos.y;
+	}
+
+	s_CamRot.y += lookX * s_MouseSens;
+	s_CamRot.x += lookY * s_MouseSens;
+	
+	s_MousePos = mousePos;
+
+	// camera location
+	glm::vec3 inputMovement = { 0.0f, 0.0f, 0.0f };
+
+	if (ImGui::IsKeyDown(ImGuiKey_W))
+		inputMovement.z += 1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_S))
+		inputMovement.z += -1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_A))
+		inputMovement.x += -1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_D))
+		inputMovement.x += 1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_Q))
+		inputMovement.y += -1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_E))
+		inputMovement.y += 1.0f;
+
+	if (inputMovement.x || inputMovement.y || inputMovement.z)
+	{
+		glm::vec3 forward = Math::Forward(glm::radians(s_CamRot));
+		glm::vec3 right = Math::Right(glm::radians(s_CamRot));
+		glm::vec3 up = glm::cross(forward, right);
+
+		glm::vec3 finalMovement = forward * inputMovement.z + right * inputMovement.x + up * inputMovement.y;
+		finalMovement = glm::normalize(finalMovement) * (s_CamSpeed * deltaTime);
+		
+		s_CamPos = s_CamPos + finalMovement;
+	}
+
+	if (ImGui::IsKeyDown(ImGuiKey_R))
+		s_CamPos = glm::vec3(0.0f);
 }
 
 void NewFrame()
@@ -850,31 +953,38 @@ void NewFrame()
 	VkRenderingInfo renderInfo1 = VkUtils::RenderingInfo(g_SwapchainExtent, &drawImageColorAttachment, &drawImageDepth);
 	vkCmdBeginRendering(cmd, &renderInfo1);
 
-	for (auto& mesh : g_Meshes)
+	glm::vec3 camRotRadians = glm::radians(s_CamRot);
+
+	glm::vec3 camForward = Math::Forward(camRotRadians);
+	glm::vec3 camRight = Math::Right(camRotRadians);
+	glm::vec3 camUp = glm::cross(camForward, camRight);
+
+	glm::mat4 view = glm::lookAtLH(s_CamPos, camForward + s_CamPos, camUp);
+	view = view * glm::rotate(camRotRadians.z, glm::vec3(0.0f, 0.0f, 1.0f));
+
+	glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(s_CamFOV), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
+
+	float meshOffset = 0.0f;
+	for(auto& mesh : g_Meshes)
 	{
-		if (!mesh->IsLoaded())
-		{
-			//LOG_ERR("Mesh is not loaded yet, skipping render");
+		if (!mesh->IsLoaded()) // possible false sharing di mesh->m_IsLoaded per colpa dei thread che toccano m_VertexBuffer etc..?
 			continue;
-		}
 
 		glm::mat4 rotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
 			* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
 			* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
 
-		glm::mat4 model = glm::translate(g_MeshTransform.position) * rotation * glm::scale(g_MeshTransform.scale);
-		
-		glm::vec3 eyeFocus = glm::vec3(0.0f, 0.0f, 1.0f);
-		glm::vec3 eyePos = glm::vec3(0.0f, 0.0f, -3.0f);
-		glm::mat4 view = glm::lookAtLH(eyePos, eyeFocus + eyePos, glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::vec3 modelPos = g_MeshTransform.position;
+		modelPos.x += meshOffset;
+		meshOffset += 30;
 
-		glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(70.0f), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
+		glm::mat4 model = glm::translate(modelPos) * rotation * glm::scale(g_MeshTransform.scale);
 
 		MeshPushConstant meshPushConst;
 		meshPushConst.worldMatrix = proj * view * model;
 		meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
 		vkCmdPushConstants(cmd, g_GraphicsPipeline1.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
-		
+
 		vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
 
 		const auto& submeshes = mesh->GetSubmeshes();
@@ -942,16 +1052,18 @@ int main()
 {
 	LOG_INFO("Starting!");
 
-	check(glfwInit() == GLFW_TRUE);
+	CORE_ASSERT(glfwInit() == GLFW_TRUE, "Unable to init glfw!");
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	g_Window = glfwCreateWindow(1400, 900, "Vulkan!!!", nullptr, nullptr);
+	CORE_ASSERT(g_Window, "Unable to spawn window!");
 
 	InitVulkan();
 	InitImgui();
 	
-	g_AssetManager.Init(8);
-
+	g_AssetManager.Init(4);
+	LoadGeometry();
+		
 	while (!glfwWindowShouldClose(g_Window))
 	{
 		glfwPollEvents();
@@ -960,7 +1072,11 @@ int main()
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
-		Update();
+		double now = glfwGetTime();
+		g_FrameTime = (float)(now - g_Time);
+		Update(g_FrameTime);
+		g_Time = now;
+
 		NewFrame();
 	}
 

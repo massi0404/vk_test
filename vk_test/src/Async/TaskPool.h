@@ -22,6 +22,7 @@ public:
 
 	void Start(uint32_t threadCount)
 	{
+		m_Workers.reserve(threadCount);
 		for (uint32_t i = 0; i < threadCount; i++)
 		{
 			m_Workers.emplace_back([this, i]() {
@@ -41,6 +42,7 @@ public:
 					m_DequeuedTasks++;
 					lck.unlock();
 
+					// task({i})? puo essere utile per alcuni sistemi che utilizzano le risorse separate per thread?
 					task();
 				}
 			});
