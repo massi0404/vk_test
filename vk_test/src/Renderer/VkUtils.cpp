@@ -57,10 +57,27 @@ namespace VkUtils {
 
     Buffer CreateBuffer(VkDevice device, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryFlags)
     {
+        return CreateBuffer(device, size, usage, memoryFlags, 0, 0);
+    }
+
+    Buffer CreateBuffer(VkDevice device, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryFlags, u32 uploadQueue, u32 renderQueue)
+    {
         VkBufferCreateInfo bufferInfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bufferInfo.size = size;
         bufferInfo.usage = usage;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        u32 queues[2] = { uploadQueue, renderQueue };
+
+        if (uploadQueue != renderQueue)
+        {
+            bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            bufferInfo.queueFamilyIndexCount = 2;
+            bufferInfo.pQueueFamilyIndices = queues;
+        }
+        else
+        {
+            bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        }
 
         VkBuffer buffer;
         vkCheck(vkCreateBuffer(device, &bufferInfo, nullptr, &buffer));
@@ -73,7 +90,7 @@ namespace VkUtils {
         allocFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
         allocFlags.deviceMask = 0; // ? boh
 
-        VkMemoryAllocateInfo allocInfo {};
+        VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.pNext = &allocFlags;
         allocInfo.allocationSize = memRequirements.size;
@@ -95,6 +112,13 @@ namespace VkUtils {
 
     Image CreateImage(VkDevice device, const ImageDesc& imageDesc)
     {
+        return CreateImage(device, imageDesc, 0, 0);
+    }
+
+    Image CreateImage(VkDevice device, const ImageDesc& imageDesc, u32 uploadQueue, u32 renderQueue)
+    {
+        u32 concurrentQueues[2] = { uploadQueue, renderQueue };
+
         VkImageCreateInfo imageInfo = {};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -106,9 +130,16 @@ namespace VkUtils {
         imageInfo.format = imageDesc.format;
         imageInfo.tiling = imageDesc.tiling;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage = imageDesc.usage;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        
+        if (uploadQueue != renderQueue)
+        {
+            imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            imageInfo.queueFamilyIndexCount = 2;
+            imageInfo.pQueueFamilyIndices = concurrentQueues;
+        }
 
         VkImage image;
         vkCheck(vkCreateImage(device, &imageInfo, nullptr, &image));

@@ -69,11 +69,11 @@ void DebugLog(ELogSeverity severity, const char* msg, ...)
 	if (!s_DebugHandler)
 		return;
 
-	char userMsg[512];
+	char userMsg[1024];
 
 	va_list args;
 	va_start(args, msg);
-	vsnprintf((char*)userMsg, 512, msg, args);
+	vsnprintf((char*)userMsg, 1024, msg, args);
 	va_end(args);
 
 	s_DebugHandler(severity, userMsg);

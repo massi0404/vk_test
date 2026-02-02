@@ -95,32 +95,46 @@ MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device)
 		depthStencilState.maxDepthBounds = 1.0f;
 	}
 
-	VkPipelineColorBlendAttachmentState colorBlendAttachmentState = {};
-	colorBlendAttachmentState.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	if (m_BlendMode != GFX_BLEND_NONE)
+	std::vector<VkPipelineColorBlendAttachmentState> blendStates(m_ColorAttachments.size());
+
+	// todo: setup blend states!!!!
+
+	for (auto& blendState : blendStates)
 	{
-		/*
-			outColor = srcColor * srcColorBlendFactor <op> dstColor * dstColorBlendFactor
-
-			VK_BLEND_FACTOR_ONE:		outColor = srcColor.rgb * srcColor.a + dstColor.rgb * 1.0
-			VK_BLEND_FACTOR_SRC_ALPHA:	outColor = srcColor.rgb * srcColor.a + dstColor.rgb * (1.0 - srcColor.a)
-		*/
-
-		colorBlendAttachmentState.blendEnable = VK_TRUE;
-		colorBlendAttachmentState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-		colorBlendAttachmentState.dstColorBlendFactor = m_BlendMode == GFX_BLEND_ADDITIVE ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-		colorBlendAttachmentState.colorBlendOp = VK_BLEND_OP_ADD;
-		colorBlendAttachmentState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-		colorBlendAttachmentState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-		colorBlendAttachmentState.alphaBlendOp = VK_BLEND_OP_ADD;
+		blendState = {};
+		blendState.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	}
+
+	/*blendStates[0] = {};
+	blendStates[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;*/
+
+	//blendStates[1] = {};
+	//blendStates[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+	//if (m_BlendMode != GFX_BLEND_NONE) // solo il primo, schifo, tmp...
+	//{
+	//	/*
+	//		outColor = srcColor * srcColorBlendFactor <op> dstColor * dstColorBlendFactor
+
+	//		VK_BLEND_FACTOR_ONE:		outColor = srcColor.rgb * srcColor.a + dstColor.rgb * 1.0
+	//		VK_BLEND_FACTOR_SRC_ALPHA:	outColor = srcColor.rgb * srcColor.a + dstColor.rgb * (1.0 - srcColor.a)
+	//	*/
+
+	//	blendStates[0].blendEnable = VK_TRUE;
+	//	blendStates[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	//	blendStates[0].dstColorBlendFactor = m_BlendMode == GFX_BLEND_ADDITIVE ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	//	blendStates[0].colorBlendOp = VK_BLEND_OP_ADD;
+	//	blendStates[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	//	blendStates[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	//	blendStates[0].alphaBlendOp = VK_BLEND_OP_ADD;
+	//}
 
 	VkPipelineColorBlendStateCreateInfo colorBlendInfoState = {};
 	colorBlendInfoState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlendInfoState.logicOpEnable = VK_FALSE;
 	colorBlendInfoState.logicOp = VK_LOGIC_OP_COPY; // Optional
-	colorBlendInfoState.attachmentCount = 1;
-	colorBlendInfoState.pAttachments = &colorBlendAttachmentState;
+	colorBlendInfoState.attachmentCount = (u32)blendStates.size();
+	colorBlendInfoState.pAttachments = blendStates.data();
 	colorBlendInfoState.blendConstants[0] = 0.0f; // Optional
 	colorBlendInfoState.blendConstants[1] = 0.0f; // Optional
 	colorBlendInfoState.blendConstants[2] = 0.0f; // Optional

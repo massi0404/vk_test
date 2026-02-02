@@ -30,6 +30,12 @@
 
 #include "Math/Math.h"
 
+struct UniformBuffer
+{
+	VkUtils::Buffer buffer;
+	void* mappedMemory = nullptr;
+};
+
 struct FrameData
 {
 	VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -37,6 +43,9 @@ struct FrameData
 	VkSemaphore swapchainSemaphore = VK_NULL_HANDLE; // gpu -> gpu
 	VkFence fence = VK_NULL_HANDLE; // cpu -> gpu
 	DeletionQueue deletionQueue;
+	VkDescriptorSet descriptorGBuffer = VK_NULL_HANDLE;
+	VkDescriptorSet descriptorCompose = VK_NULL_HANDLE;
+	UniformBuffer uniformBuffer0;
 };
 
 struct SwapchainImage
@@ -53,7 +62,11 @@ FrameData g_FramesData[FRAMES_IN_FLIGHT];
 
 // stuff
 constexpr VkFormat DRAW_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT; // migliore della swapchain, per disegnare con precisione...
-constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+
+constexpr VkFormat GBUFFER_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+constexpr VkFormat GBUFFER_ALBEDO_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat GBUFFER_NORMALS_FORMAT = VK_FORMAT_R16G16B16A16_SNORM;
+constexpr VkFormat GBUFFER_ENTITY_FORMAT = VK_FORMAT_R16G16B16A16_UINT;
 
 // swapchain
 VkSwapchainKHR g_Swapchain = VK_NULL_HANDLE;
@@ -64,9 +77,13 @@ std::vector<VkImage> g_SwapchainImages;
 std::vector<VkImageView> g_SwapchainImageViews;
 std::vector<VkSemaphore> g_SwapchainSemaphores;
 
-// scratch image
-VkUtils::Image g_DrawImage = {};
-VkUtils::Image g_DrawImageDepth = {};
+// scratch images
+VkUtils::Image g_GBuffer_Depth;
+VkUtils::Image g_GBuffer_Albedo;
+VkUtils::Image g_GBuffer_Normals;
+VkUtils::Image g_GBuffer_Entity;
+
+VkUtils::Image g_CompositeFinal;
 
 // misc
 VkCommandPool g_ImmediateCommandPool = VK_NULL_HANDLE;
@@ -78,13 +95,17 @@ VkSampler g_TextureSamplerBasic = VK_NULL_HANDLE;
 // descriptors
 VkDescriptorPool g_DescriptorPool = VK_NULL_HANDLE;
 
-VkDescriptorSetLayout g_DescriptorSetLayout0 = VK_NULL_HANDLE;
-VkDescriptorSet g_DescriptorSet0 = VK_NULL_HANDLE;
+VkDescriptorSetLayout g_Gfx_GBuffer_DSLayout = VK_NULL_HANDLE;
+VkDescriptorSetLayout g_Gfx_Compose_DSLayout = VK_NULL_HANDLE;
+
+VkDescriptorSetLayout g_ComputeDSLayout = VK_NULL_HANDLE;
+VkDescriptorSet g_ComputeDS = VK_NULL_HANDLE;
 
 // compute & graphics pipelines
 MyVkPipeline g_ComputePipeline;
-MyVkPipeline g_GraphicsPipeline0;
-MyVkPipeline g_GraphicsPipeline1;
+
+MyVkPipeline g_GfxPipelineDeferred_GBuffer;
+MyVkPipeline g_GfxPipelineDeferred_Compose;
 
 // push constants
 struct PushConstant0
@@ -118,6 +139,14 @@ Transform g_MeshTransform;
 
 double g_Time = 0.0;
 float g_FrameTime = 0.0f; // seconds
+
+struct UniBuffBoh
+{
+	glm::vec4 color0;
+	glm::vec4 color1;
+	glm::vec4 color2;
+	glm::vec4 color3;
+};
 
 void CreateSwapchain()
 {
@@ -307,24 +336,13 @@ void CreatePipeline()
 
 		ComputePipelineBuilder computeBuilder;
 		computeBuilder.m_ComputeShader = "shaders/bin/comp.spv";
-		computeBuilder.m_Descriptors = { g_DescriptorSetLayout0 };
+		computeBuilder.m_Descriptors = { g_ComputeDSLayout };
 		computeBuilder.m_PushConstants = { computePushConstant0 };
 
-		g_ComputePipeline = computeBuilder.Build(device);
+		//g_ComputePipeline = computeBuilder.Build(device);
 	}
 
-	// graphics pipeline 0
-	{
-		GraphicsPipelineBuilder graphicsBuilder;
-		graphicsBuilder.m_VertexShader = "shaders/bin/vert.spv";
-		graphicsBuilder.m_FragmentShader = "shaders/bin/frag.spv";
-		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
-		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
-
-		g_GraphicsPipeline0 = graphicsBuilder.Build(device);
-	}
-
-	// graphics pipeline 1
+	// graphics pipeline gbuffer
 	{
 		VkPushConstantRange meshPushConst;
 		meshPushConst.size = sizeof(MeshPushConstant);
@@ -332,29 +350,42 @@ void CreatePipeline()
 		meshPushConst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 			
 		GraphicsPipelineBuilder graphicsBuilder;
-		graphicsBuilder.m_VertexShader = "shaders/bin/mesh_vert.spv";
-		graphicsBuilder.m_FragmentShader = "shaders/bin/frag.spv";
-		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
+		graphicsBuilder.m_VertexShader = "shaders/bin/vert_gbuffer.spv";
+		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_gbuffer.spv";
+		graphicsBuilder.m_ColorAttachments = { GBUFFER_ALBEDO_FORMAT, GBUFFER_NORMALS_FORMAT, GBUFFER_ENTITY_FORMAT };
 		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
 		graphicsBuilder.m_PushConstants = { meshPushConst };
+		graphicsBuilder.m_Descriptors = { g_Gfx_GBuffer_DSLayout };
 		//graphicsBuilder.m_BlendMode = EGraphicsBlendMode::GFX_BLEND_ADDITIVE;
 		/*
 			We give it depth write, and as operator GREATER_OR_EQUAL.
 			As mentioned, because 0 is far and 1 is near,
 			we will want to only render the pixels if the current depth value is greater than the depth value on the depth image.
 		*/
-		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_GREATER_OR_EQUAL, DEPTH_FORMAT, true };
+		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_GREATER_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
 
-		g_GraphicsPipeline1 = graphicsBuilder.Build(device);
+		g_GfxPipelineDeferred_GBuffer = graphicsBuilder.Build(device);
+	}
+
+	// graphics pipeline compose
+	{
+		GraphicsPipelineBuilder graphicsBuilder;
+		graphicsBuilder.m_VertexShader = "shaders/bin/vert_composite.spv";
+		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_composite.spv";
+		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
+		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
+		graphicsBuilder.m_Descriptors = { g_Gfx_Compose_DSLayout };
+
+		g_GfxPipelineDeferred_Compose = graphicsBuilder.Build(device);
 	}
 
 	// cleanup
 	g_RendererContext.QueueShutdownFunc([device]() {
-		vkDestroyPipeline(device, g_GraphicsPipeline1.pipeline, nullptr);
-		vkDestroyPipelineLayout(device, g_GraphicsPipeline1.layout, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineDeferred_GBuffer.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineDeferred_GBuffer.layout, nullptr);
 
-		vkDestroyPipeline(device, g_GraphicsPipeline0.pipeline, nullptr);
-		vkDestroyPipelineLayout(device, g_GraphicsPipeline0.layout, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineDeferred_Compose.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineDeferred_Compose.layout, nullptr);
 
 		vkDestroyPipeline(device, g_ComputePipeline.pipeline, nullptr);
 		vkDestroyPipelineLayout(device, g_ComputePipeline.layout, nullptr);
@@ -455,41 +486,75 @@ void CreateCommands()
 	});
 }
 
+void ImmediateSubmit(std::function<void(VkCommandBuffer)> func)
+{
+	VkDevice device = g_RendererContext.GetDevice();
+
+	vkCheck(vkResetFences(device, 1, &g_ImmediateFence));
+	vkCheck(vkResetCommandBuffer(g_ImmediateCmdBuffer, 0));
+
+	// begin the command buffer recording. We will use this command buffer exactly
+	// once, so we want to let vulkan know that
+	VkCommandBufferBeginInfo cmdBufferBeginInfo = {};
+	cmdBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	cmdBufferBeginInfo.pNext = nullptr;
+	cmdBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	vkCheck(vkBeginCommandBuffer(g_ImmediateCmdBuffer, &cmdBufferBeginInfo));
+
+	func(g_ImmediateCmdBuffer); // call user function
+
+	vkCheck(vkEndCommandBuffer(g_ImmediateCmdBuffer));
+
+	VkCommandBufferSubmitInfo cmdinfo = VkUtils::CommandBufferSubmitInfo(g_ImmediateCmdBuffer);
+	VkSubmitInfo2 submitInfo = VkUtils::SubmitInfo(&cmdinfo, nullptr, nullptr);
+
+	// submit command buffer to the queue and execute it.
+	//  _renderFence will now block until the graphic commands finish execution
+	vkCheck(vkQueueSubmit2(g_RendererContext.GetRendererDevice().GetGraphicsQueue(), 1, &submitInfo, g_ImmediateFence));
+
+	vkCheck(vkWaitForFences(device, 1, &g_ImmediateFence, true, 9999999999));
+}
+
 void CreateRenderImage()
 {
 	VkDevice device = g_RendererContext.GetDevice();
 
-	// draw image
-	{
-		VkUtils::ImageDesc imageDesc = {
-			.width = g_SwapchainExtent.width,
-			.height = g_SwapchainExtent.height,
-			.format = DRAW_FORMAT,
-			.tiling = VK_IMAGE_TILING_OPTIMAL,
-			.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-			.aspect = VK_IMAGE_ASPECT_COLOR_BIT
-		};
+	VkUtils::ImageDesc gbufferAttachmentTemplate = {};
+	gbufferAttachmentTemplate.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	gbufferAttachmentTemplate.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+	gbufferAttachmentTemplate.width = g_SwapchainExtent.width;
+	gbufferAttachmentTemplate.height = g_SwapchainExtent.height;
+	gbufferAttachmentTemplate.tiling = VK_IMAGE_TILING_OPTIMAL;
 
-		g_DrawImage = VkUtils::CreateImage(device, imageDesc);
-	}
+	gbufferAttachmentTemplate.format = GBUFFER_ALBEDO_FORMAT;
+	g_GBuffer_Albedo = VkUtils::CreateImage(device, gbufferAttachmentTemplate);
+	
+	gbufferAttachmentTemplate.format = GBUFFER_NORMALS_FORMAT;
+	g_GBuffer_Normals = VkUtils::CreateImage(device, gbufferAttachmentTemplate);
 
-	// draw image depth
-	{
-		VkUtils::ImageDesc imageDesc = {
-			.width = g_SwapchainExtent.width,
-			.height = g_SwapchainExtent.height,
-			.format = DEPTH_FORMAT,
-			.tiling = VK_IMAGE_TILING_OPTIMAL,
-			.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-			.aspect = VK_IMAGE_ASPECT_DEPTH_BIT
-		};
+	gbufferAttachmentTemplate.format = GBUFFER_ENTITY_FORMAT;
+	g_GBuffer_Entity = VkUtils::CreateImage(device, gbufferAttachmentTemplate);
 
-		g_DrawImageDepth = VkUtils::CreateImage(device, imageDesc);
-	}
+	gbufferAttachmentTemplate.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	gbufferAttachmentTemplate.aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+	gbufferAttachmentTemplate.format = GBUFFER_DEPTH_FORMAT;
+	g_GBuffer_Depth = VkUtils::CreateImage(device, gbufferAttachmentTemplate);
+
+	VkUtils::ImageDesc compositeFinalAttachment = {};
+	compositeFinalAttachment.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	compositeFinalAttachment.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+	compositeFinalAttachment.width = g_SwapchainExtent.width;
+	compositeFinalAttachment.height = g_SwapchainExtent.height;
+	compositeFinalAttachment.tiling = VK_IMAGE_TILING_OPTIMAL;
+	compositeFinalAttachment.format = DRAW_FORMAT;
+	g_CompositeFinal = VkUtils::CreateImage(device, compositeFinalAttachment);
 
 	g_RendererContext.QueueShutdownFunc([device]() {
-		VkUtils::DestroyImage(device, g_DrawImageDepth);
-		VkUtils::DestroyImage(device, g_DrawImage);
+		VkUtils::DestroyImage(device, g_GBuffer_Albedo);
+		VkUtils::DestroyImage(device, g_GBuffer_Normals);
+		VkUtils::DestroyImage(device, g_GBuffer_Entity);
+		VkUtils::DestroyImage(device, g_GBuffer_Depth);
+		VkUtils::DestroyImage(device, g_CompositeFinal);
 	});
 }
 
@@ -497,64 +562,137 @@ void CreateDescriptors()
 {
 	VkDevice device = g_RendererContext.GetDevice();
 
-	// questo logicamente e' piu un std::set che un std::vector
-	// infatti VkDescriptorPoolCreateInfo fa la somma di tutti PoolSize con lo stesso type...
-	std::array<VkDescriptorPoolSize, 1> poolSizes; 
-	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[0].descriptorCount = 1; // per ora una singola immagine di un singolo bartolo per tutto il pool
+	VkDescriptorPoolSize poolSizes[] = {
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 12 }
+	};
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.flags = 0;
-	poolInfo.maxSets = 1; // per ora usiamo 1 solo set
-	poolInfo.poolSizeCount = (uint32_t)poolSizes.size();
-	poolInfo.pPoolSizes = poolSizes.data();
-
+	poolInfo.maxSets = 8;
+	poolInfo.poolSizeCount = (u32)std::size(poolSizes);
+	poolInfo.pPoolSizes = poolSizes;
 	vkCheck(vkCreateDescriptorPool(device, &poolInfo, nullptr, &g_DescriptorPool));
 
-	// crea i bindings (gli struct / immagini nelle shader)
-	std::array<VkDescriptorSetLayoutBinding, 1> bindings;
-	// bindings[0] = image
-	bindings[0].binding = 0; // binding 0 nello shader
-	bindings[0].descriptorCount = 1; // array size in shader
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	// compute
+	{
+		VkDescriptorSetLayoutBinding bindings[1];
+		bindings[0].binding = 0;
+		bindings[0].descriptorCount = 1; // array count
+		bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+		bindings[0].pImmutableSamplers = nullptr;
 
-	// crea il set (raccolta di tutti i bindings, disponibili in tutta la pipeline, ma filtrati da stageFlags del sinogolo binding)
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.pBindings = bindings.data();
-	layoutInfo.bindingCount = (uint32_t)bindings.size();
+		VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		layoutInfo.pBindings = bindings;
+		layoutInfo.bindingCount = (u32)std::size(bindings);
+		vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_ComputeDSLayout));
 
-	vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_DescriptorSetLayout0));
+		VkDescriptorSetAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = g_DescriptorPool;
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts = &g_ComputeDSLayout;
+		vkCheck(vkAllocateDescriptorSets(device, &allocInfo, &g_ComputeDS));
+	}
 
-	VkDescriptorSetAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = g_DescriptorPool;
-	allocInfo.descriptorSetCount = 1;
-	allocInfo.pSetLayouts = &g_DescriptorSetLayout0;
+	// gfx
+	{
+		// GBuffer pipeline
+		{
+			VkDescriptorSetLayoutBinding bindings[2];
 
-	vkCheck(vkAllocateDescriptorSets(device, &allocInfo, &g_DescriptorSet0));
+			// texture
+			bindings[0].binding = 0;
+			bindings[0].descriptorCount = 1; // array count
+			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[0].pImmutableSamplers = nullptr;
 
-	// binding... questo lo facciamo una sola volta, ma viene fatto piu spesso
-	VkDescriptorImageInfo imgInfo = {};
-	imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	imgInfo.imageView = g_DrawImage.view;
+			// uniformbuffer0
+			bindings[1].binding = 1;
+			bindings[1].descriptorCount = 1; // array count
+			bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[1].pImmutableSamplers = nullptr;
 
-	VkWriteDescriptorSet drawImageWrite = {};
-	drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+			layoutInfo.pBindings = bindings;
+			layoutInfo.bindingCount = (u32)std::size(bindings);
+			vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_Gfx_GBuffer_DSLayout));
+		}
 
-	drawImageWrite.dstBinding = 0; // layoutInfo.pBindings[x]
-	drawImageWrite.dstSet = g_DescriptorSet0;
-	drawImageWrite.descriptorCount = 1; // bindings[0].descriptorCount
-	drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	drawImageWrite.pImageInfo = &imgInfo;
+		// Compose pipeline
+		{
+			VkDescriptorSetLayoutBinding bindings[3];
 
-	vkUpdateDescriptorSets(device, 1, &drawImageWrite, 0, nullptr);
+			// albedo
+			bindings[0].binding = 0;
+			bindings[0].descriptorCount = 1; // array count
+			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[0].pImmutableSamplers = nullptr;
+
+			// normals
+			bindings[1].binding = 1;
+			bindings[1].descriptorCount = 1; // array count
+			bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[1].pImmutableSamplers = nullptr;
+
+			// entity id
+			bindings[2].binding = 2;
+			bindings[2].descriptorCount = 1; // array count
+			bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[2].pImmutableSamplers = nullptr;
+
+			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+			layoutInfo.pBindings = bindings;
+			layoutInfo.bindingCount = (u32)std::size(bindings);
+			vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_Gfx_Compose_DSLayout));
+		}
+
+		constexpr u32 kDescriptorsCount = FRAMES_IN_FLIGHT + FRAMES_IN_FLIGHT; // gbuffer pipeline, compose pipeline
+
+		VkDescriptorSet gfxSets[kDescriptorsCount];
+		VkDescriptorSetLayout gfxLayouts[kDescriptorsCount] = { g_Gfx_GBuffer_DSLayout, g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Compose_DSLayout };
+
+		VkDescriptorSetAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = g_DescriptorPool;
+		allocInfo.descriptorSetCount = kDescriptorsCount;
+		allocInfo.pSetLayouts = gfxLayouts;
+		vkAllocateDescriptorSets(device, &allocInfo, gfxSets);
+
+		for (u32 i = 0; i < FRAMES_IN_FLIGHT; i++)
+		{
+			// uniform buffer
+			UniformBuffer& uniform0 = g_FramesData[i].uniformBuffer0;
+			
+			uniform0.buffer = VkUtils::CreateBuffer(device, sizeof(UniBuffBoh), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT /* :( pero se la cambiamo ogni frame... */ | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+			vkMapMemory(device, uniform0.buffer.memory, 0, sizeof(UniBuffBoh), 0, &uniform0.mappedMemory);
+
+			// descriptors
+			g_FramesData[i].descriptorGBuffer = gfxSets[i];
+			g_FramesData[i].descriptorCompose = gfxSets[i + 2];
+		}
+	}
 
 	g_RendererContext.QueueShutdownFunc([device]() {
 		vkDestroyDescriptorPool(device, g_DescriptorPool, nullptr);
-		vkDestroyDescriptorSetLayout(device, g_DescriptorSetLayout0, nullptr);
+		vkDestroyDescriptorSetLayout(device, g_ComputeDSLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, g_Gfx_GBuffer_DSLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, g_Gfx_Compose_DSLayout, nullptr);
+
+		for (FrameData& frameData : g_FramesData)
+			VkUtils::DestroyBuffer(device, frameData.uniformBuffer0.buffer);
 	});
 }
 
@@ -638,35 +776,6 @@ void CreateTextureSamplers()
 	});
 }
 
-void ImmediateSubmit(std::function<void(VkCommandBuffer)> func)
-{
-	VkDevice device = g_RendererContext.GetDevice();
-
-	vkCheck(vkResetFences(device, 1, &g_ImmediateFence));
-	vkCheck(vkResetCommandBuffer(g_ImmediateCmdBuffer, 0));
-
-	// begin the command buffer recording. We will use this command buffer exactly
-	// once, so we want to let vulkan know that
-	VkCommandBufferBeginInfo cmdBufferBeginInfo = {};
-	cmdBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	cmdBufferBeginInfo.pNext = nullptr;
-	cmdBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	vkCheck(vkBeginCommandBuffer(g_ImmediateCmdBuffer, &cmdBufferBeginInfo));
-
-	func(g_ImmediateCmdBuffer); // call user function
-
-	vkCheck(vkEndCommandBuffer(g_ImmediateCmdBuffer));
-
-	VkCommandBufferSubmitInfo cmdinfo = VkUtils::CommandBufferSubmitInfo(g_ImmediateCmdBuffer);
-	VkSubmitInfo2 submitInfo = VkUtils::SubmitInfo(&cmdinfo, nullptr, nullptr);
-
-	// submit command buffer to the queue and execute it.
-	//  _renderFence will now block until the graphic commands finish execution
-	vkCheck(vkQueueSubmit2(g_RendererContext.GetRendererDevice().GetGraphicsQueue(), 1, &submitInfo, g_ImmediateFence));
-
-	vkCheck(vkWaitForFences(device, 1, &g_ImmediateFence, true, 9999999999));
-}
-
 struct LoadingState
 {
 	u32 currentlyLoaded;
@@ -677,6 +786,16 @@ LoadingState g_LoadingState;
 
 static std::vector<Mesh*> g_Meshes;
 static std::vector<Texture*> g_Textures;
+
+static glm::vec3 s_CamPos = { 3.3f, 1.3f, -13.0f };
+static glm::vec3 s_CamRot = { 0.0f, 0.0f, 0.0f };
+static float s_CamSpeed = 10.0f;
+static float s_CamFOV = 60.0f;
+static ImVec2 s_MousePos = {};
+static float s_MouseSens = 0.1f;
+
+static UniBuffBoh s_ShaderUniBuff = {};
+static Texture* s_BoundTexture = nullptr;
 
 void LoadGeometry()
 {
@@ -690,7 +809,9 @@ void LoadGeometry()
 	};
 
 	std::filesystem::path texturesToLoad[] = {
-		std::filesystem::path("assets") / "doom.jpg"
+		std::filesystem::path("assets") / "doom.jpg",
+		std::filesystem::path("assets") / "textures" / "brickwall.png",
+		std::filesystem::path("assets") / "textures" / "grass.png",
 	};
 
 	for (const auto& meshPath : meshesToLoad)
@@ -707,6 +828,9 @@ void LoadGeometry()
 
 	g_LoadingState.loadTarget = g_Meshes.size() + g_Textures.size();
 
+	s_BoundTexture = g_Textures[0]; // doom
+	s_ShaderUniBuff.color0 = glm::vec4(1.0f);
+
 	g_RendererContext.QueueShutdownFunc([]() {
 		for (auto mesh : g_Meshes)
 		{
@@ -721,15 +845,13 @@ void LoadGeometry()
 		}
 	});
 }
- 
+
 void InitVulkan()
 {
 	HWND mainWnd = glfwGetWin32Window(g_Window);
 	g_RendererContext.Init((void*)mainWnd);
 	
 	VkUtils::Init(g_RendererContext.GetGPU());
-
-	g_ResourceFactory.Init(&g_RendererContext);
 	
 	CreateSwapchain();
 	CreateCommands();
@@ -745,17 +867,9 @@ void InitVulkan()
 
 void ShutdownVulkan()
 {
-	g_ResourceFactory.Shutdown();
 	vkCheck(vkDeviceWaitIdle(g_RendererContext.GetDevice()));
 	g_RendererContext.Shutdown();
 }
-
-static glm::vec3 s_CamPos = { 3.3f, 1.3f, -13.0f };
-static glm::vec3 s_CamRot = { 0.0f, 0.0f, 0.0f };
-static float s_CamSpeed = 10.0f;
-static float s_CamFOV = 60.0f;
-static ImVec2 s_MousePos = {};
-static float s_MouseSens = 0.1f;
 
 void ImGuii()
 {
@@ -766,7 +880,7 @@ void ImGuii()
 	
 	if (ImGui::Button("Load scene async"))
 	{
-		std::filesystem::path meshPath = std::filesystem::path("assets") / "chisa_wuthering_waves.glb";
+		std::filesystem::path meshPath = std::filesystem::path("assets") / "car.glb";
 		for (u32 i = 0; i < 16; i++)
 		{
 			Mesh* meshRes = g_AssetManager.LoadMesh(meshPath);
@@ -778,7 +892,36 @@ void ImGuii()
 
 	ImGui::Separator();
 
-	ImGui::Text("Frametime: %f (%.0f FPS)", g_FrameTime, 1.0f / g_FrameTime);
+	if (ImGui::BeginCombo("Texture", s_BoundTexture ? s_BoundTexture->DebugName.c_str() : "Nulla :("))
+	{
+		if (ImGui::Selectable("Nulla :(", s_BoundTexture == nullptr))
+			s_BoundTexture = nullptr;
+
+		for (Texture* texture : g_Textures)
+		{
+			if (ImGui::Selectable(texture->DebugName.c_str(), texture == s_BoundTexture))
+				s_BoundTexture = texture;
+		}
+
+		ImGui::EndCombo();
+	}
+
+	ImGui::Separator();
+
+	static float stableFrametime = g_FrameTime;
+	static float lastSample = g_Time;
+
+	if (g_Time - lastSample > 0.05f)
+	{
+		stableFrametime = g_FrameTime;
+		lastSample = g_Time;
+	}
+
+	ImGui::Text("Frametime: %.2fms (%.0f FPS)", stableFrametime * 1000.0f, 1.0f / stableFrametime);
+
+	ImGui::Separator();
+
+	ImGui::ColorEdit4("Uniform buffer 'color0'", glm::value_ptr(s_ShaderUniBuff.color0));
 
 	ImGui::Separator();
 
@@ -884,36 +1027,6 @@ void NewFrame()
 	cmdBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkCheck(vkBeginCommandBuffer(cmd, &cmdBufferBeginInfo));
 
-	//std::cout << std::format("frame index: {}, image index: {}\n", g_FrameIndex, imageIndex);
-
-	// convert image for writing, VK_IMAGE_LAYOUT_GENERAL va bene per scrivere da compute o fare il clear, non e' il meglio...
-	VkUtils::TransitionImage(cmd, g_DrawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-
-	auto imageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
-	
-	// clear
-	VkClearColorValue clearColor;
-	clearColor.float32[0] = 0.2f;
-	clearColor.float32[1] = 0.4f;
-	clearColor.float32[2] = 0.6f;
-	clearColor.float32[3] = 1.0f;
-	vkCmdClearColorImage(cmd, g_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearColor, 1, &imageRange);
-
-#if 0 
-	// PIPELINE COMPUTE!!!
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_ComputePipeline.pipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_ComputePipeline.layout, 0, 1, &g_DescriptorSet0, 0, nullptr);
-	vkCmdPushConstants(cmd, g_ComputePipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstant0), &g_ColorPushConst);
-	
-	uint32_t groupCountX = (uint32_t)std::ceil((float)g_SwapchainExtent.width / 16.0f);
-	uint32_t groupCountY = (uint32_t)std::ceil((float)g_SwapchainExtent.height / 16.0f);
-	uint32_t groupCountZ = 1;
-	vkCmdDispatch(cmd, groupCountX, groupCountY, groupCountZ); // dispatchaaaaaaa
-#endif
-
-	// draw with graphics
-	VkUtils::TransitionImage(cmd, g_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	
 	VkViewport viewport = {};
 	viewport.x = 0;
 	viewport.y = (float)g_SwapchainExtent.height;
@@ -930,93 +1043,286 @@ void NewFrame()
 	scissor.extent.height = g_SwapchainExtent.height;
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-	VkRenderingAttachmentInfo drawImageColorAttachment = VkUtils::AttachmentInfo(g_DrawImage.view, nullptr, VK_IMAGE_LAYOUT_GENERAL /* perche? */);
-	VkRenderingAttachmentInfo drawImageDepth = VkUtils::AttachmentInfoDepth(g_DrawImageDepth.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-
-#if 0
-	// PIPELINE GRAPHICS 0!!!
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GraphicsPipeline0.pipeline);
-
-	// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GraphicsPipeline0.layout, 0, 1, ???, 0, nullptr);
-	// vkCmdPushConstants(cmd, g_GraphicsPipeline.layout, ???, 0, ???, ???);
-
-	// la nostra drawimage diventa il nostro colorattachment[0]... infatti hanno lo stesso formato
-	VkRenderingInfo renderInfo0 = VkUtils::RenderingInfo(g_SwapchainExtent, &drawImageColorAttachment, nullptr);
-	vkCmdBeginRendering(cmd, &renderInfo0);
-	vkCmdDraw(cmd, 3, 1, 0, 0); // draw test triangle !!!
-	vkCmdEndRendering(cmd); // schifo, perche dobbiamo aggiungere il depth...
-#endif
-
-	// PIPELINE GRAPHICS 1!!!
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GraphicsPipeline1.pipeline);
-	
-	VkRenderingInfo renderInfo1 = VkUtils::RenderingInfo(g_SwapchainExtent, &drawImageColorAttachment, &drawImageDepth);
-	vkCmdBeginRendering(cmd, &renderInfo1);
-
-	glm::vec3 camRotRadians = glm::radians(s_CamRot);
-
-	glm::vec3 camForward = Math::Forward(camRotRadians);
-	glm::vec3 camRight = Math::Right(camRotRadians);
-	glm::vec3 camUp = glm::cross(camForward, camRight);
-
-	glm::mat4 view = glm::lookAtLH(s_CamPos, camForward + s_CamPos, camUp);
-	view = view * glm::rotate(camRotRadians.z, glm::vec3(0.0f, 0.0f, 1.0f));
-
-	glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(s_CamFOV), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
-
-	float meshOffset = 0.0f;
-	for(auto& mesh : g_Meshes)
+	// Pipeline gbuffers
 	{
-		if (!mesh->IsLoaded()) // possible false sharing di mesh->m_IsLoaded per colpa dei thread che toccano m_VertexBuffer etc..?
-			continue;
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_GBuffer.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_GBuffer.layout, 0, 1, &frameData.descriptorGBuffer, 0, nullptr);
 
-		glm::mat4 rotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
-			* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
-			* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-
-		glm::vec3 modelPos = g_MeshTransform.position;
-		modelPos.x += meshOffset;
-		meshOffset += 30;
-
-		glm::mat4 model = glm::translate(modelPos) * rotation * glm::scale(g_MeshTransform.scale);
-
-		MeshPushConstant meshPushConst;
-		meshPushConst.worldMatrix = proj * view * model;
-		meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
-		vkCmdPushConstants(cmd, g_GraphicsPipeline1.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
-
-		vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-
-		const auto& submeshes = mesh->GetSubmeshes();
-		for (int i = 0; i < submeshes.size(); i++)
+		// Barriers (clear & attach)
 		{
-			const Submesh& submesh = submeshes[i];
-			vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+			VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+
+			VkImageMemoryBarrier2 barriers[3];
+
+			VkImageMemoryBarrier2 clearBarrier = {};
+			clearBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+			clearBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+			clearBarrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+			clearBarrier.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+			clearBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+			clearBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			clearBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			clearBarrier.subresourceRange = subimageRange;
+
+			VkImageMemoryBarrier2 renderBarrier = {};
+			renderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+			renderBarrier.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+			renderBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+			renderBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+			renderBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+			renderBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			renderBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			renderBarrier.subresourceRange = subimageRange;
+
+			VkDependencyInfo depInfo = {};
+			depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+			depInfo.imageMemoryBarrierCount = 3;
+			depInfo.pImageMemoryBarriers = barriers;
+
+			barriers[0] = clearBarrier;
+			barriers[0].image = g_GBuffer_Albedo.image;
+			barriers[1] = clearBarrier;
+			barriers[1].image = g_GBuffer_Normals.image;
+			barriers[2] = clearBarrier;
+			barriers[2].image = g_GBuffer_Entity.image;
+			vkCmdPipelineBarrier2(cmd, &depInfo);
+
+			barriers[0] = renderBarrier;
+			barriers[0].image = g_GBuffer_Albedo.image;
+			barriers[1] = renderBarrier;
+			barriers[1].image = g_GBuffer_Normals.image;
+			barriers[2] = renderBarrier;
+			barriers[2].image = g_GBuffer_Entity.image;
+			vkCmdPipelineBarrier2(cmd, &depInfo);
+		}
+
+		// render
+		{
+			glm::vec3 camRotRadians = glm::radians(s_CamRot);
+
+			glm::vec3 camForward = Math::Forward(camRotRadians);
+			glm::vec3 camRight = Math::Right(camRotRadians);
+			glm::vec3 camUp = glm::cross(camForward, camRight);
+
+			glm::mat4 view = glm::lookAtLH(s_CamPos, camForward + s_CamPos, camUp);
+			view = view * glm::rotate(camRotRadians.z, glm::vec3(0.0f, 0.0f, 1.0f));
+
+			glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(s_CamFOV), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
+
+			VkClearValue clear;
+			clear.color.float32[0] = 0.2f;
+			clear.color.float32[1] = 0.4f;
+			clear.color.float32[2] = 0.6f;
+			clear.color.float32[3] = 1.0f;
+
+			VkRenderingAttachmentInfo colorAttachementsInfo[] = {
+				VkUtils::AttachmentInfo(g_GBuffer_Albedo.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+				VkUtils::AttachmentInfo(g_GBuffer_Normals.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+				VkUtils::AttachmentInfo(g_GBuffer_Entity.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+			};
+
+			VkRenderingAttachmentInfo depthAttachmentInfo = VkUtils::AttachmentInfoDepth(g_GBuffer_Depth.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+			VkRenderingInfo renderInfo = {};
+			renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+			renderInfo.renderArea = VkRect2D{ VkOffset2D { 0, 0 }, g_SwapchainExtent };
+			renderInfo.layerCount = 1;
+			renderInfo.colorAttachmentCount = (u32)std::size(colorAttachementsInfo);
+			renderInfo.pColorAttachments = colorAttachementsInfo;
+			renderInfo.pDepthAttachment = &depthAttachmentInfo;
+			renderInfo.pStencilAttachment = nullptr;
+			vkCmdBeginRendering(cmd, &renderInfo);
+
+			Mesh* mesh = g_Meshes[0];
+			if (mesh->IsLoaded() && s_BoundTexture && s_BoundTexture->IsLoaded())
+			{
+				// push constants
+				glm::mat4 modelRotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
+					* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
+					* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+
+				glm::mat4 model = glm::translate(g_MeshTransform.position) * modelRotation * glm::scale(g_MeshTransform.scale);
+
+				MeshPushConstant meshPushConst;
+				meshPushConst.worldMatrix = proj * view * model;
+				meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
+				vkCmdPushConstants(cmd, g_GfxPipelineDeferred_GBuffer.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+				// descriptors :(
+				VkDescriptorImageInfo descriptorTexture;
+				descriptorTexture.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				descriptorTexture.sampler = g_TextureSamplerBasic;
+				descriptorTexture.imageView = s_BoundTexture->GetImage().view;
+
+				VkWriteDescriptorSet descriptorWrite = {};
+				descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrite.dstSet = frameData.descriptorGBuffer;
+				descriptorWrite.dstArrayElement = 0;
+				descriptorWrite.dstBinding = 0;
+				descriptorWrite.pImageInfo = &descriptorTexture;
+				descriptorWrite.descriptorCount = 1;
+				descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+				vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+
+				// draw calls
+				vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+				for (const Submesh& submesh : mesh->GetSubmeshes())
+					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+			}
+
+			vkCmdEndRendering(cmd);
 		}
 	}
 
-	vkCmdEndRendering(cmd);
+	// Pipeline final composite
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.layout, 0, 1, &frameData.descriptorCompose, 0, nullptr);
 
+		// Barriers
+		{
+			VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+			
+			// attachments
+			{
+				VkImageMemoryBarrier2 barriers[3];
+
+				VkImageMemoryBarrier2 renderBarrier = {};
+				renderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+				renderBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+				renderBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+				renderBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+				renderBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+				renderBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+				renderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				renderBarrier.subresourceRange = subimageRange;
+
+				barriers[0] = renderBarrier;
+				barriers[0].image = g_GBuffer_Albedo.image;
+				barriers[1] = renderBarrier;
+				barriers[1].image = g_GBuffer_Normals.image;
+				barriers[2] = renderBarrier;
+				barriers[2].image = g_GBuffer_Entity.image;
+
+				VkDependencyInfo depInfoRender = {};
+				depInfoRender.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+				depInfoRender.imageMemoryBarrierCount = 3;
+				depInfoRender.pImageMemoryBarriers = barriers;
+				vkCmdPipelineBarrier2(cmd, &depInfoRender);
+			}
+
+			// final image
+			{
+				VkImageMemoryBarrier2 barriers[2] = {};
+
+				// clear barrier
+				barriers[0] = {};
+				barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+				barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+				barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+				barriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+				barriers[0].dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+				barriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+				barriers[0].subresourceRange = subimageRange;
+				barriers[0].image = g_CompositeFinal.image;
+
+				// render barrier
+				barriers[1] = {};
+				barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+				barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+				barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+				barriers[1].srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+				barriers[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+				barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+				barriers[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+				barriers[1].subresourceRange = subimageRange;
+				barriers[1].image = g_CompositeFinal.image;
+
+				VkDependencyInfo depInfo = {};
+				depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+				depInfo.imageMemoryBarrierCount = 2;
+				depInfo.pImageMemoryBarriers = barriers;
+				vkCmdPipelineBarrier2(cmd, &depInfo);
+			}
+		}
+
+		// Draw
+		{
+			VkDescriptorImageInfo descriptorTextures[3];
+
+			descriptorTextures[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			descriptorTextures[0].sampler = g_TextureSamplerBasic;
+			descriptorTextures[0].imageView = g_GBuffer_Albedo.view;
+
+			descriptorTextures[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			descriptorTextures[1].sampler = g_TextureSamplerBasic;
+			descriptorTextures[1].imageView = g_GBuffer_Normals.view;
+
+			descriptorTextures[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			descriptorTextures[2].sampler = g_TextureSamplerBasic;
+			descriptorTextures[2].imageView = g_GBuffer_Entity.view;
+
+			VkWriteDescriptorSet descriptorWrite = {};
+			descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrite.dstSet = frameData.descriptorCompose;
+			descriptorWrite.dstArrayElement = 0;
+			descriptorWrite.dstBinding = 0;
+			descriptorWrite.pImageInfo = descriptorTextures;
+			descriptorWrite.descriptorCount = 1;
+			descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr); // todo: update normals & entity
+
+			VkClearValue clear;
+			clear.color.float32[0] = 0.2f;
+			clear.color.float32[1] = 0.4f;
+			clear.color.float32[2] = 0.6f;
+			clear.color.float32[3] = 1.0f;
+
+			VkRenderingAttachmentInfo colorAttachementsInfo[] = {
+				VkUtils::AttachmentInfo(g_CompositeFinal.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+			};
+
+			VkRenderingInfo renderInfo = {};
+			renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+			renderInfo.renderArea = VkRect2D{ VkOffset2D { 0, 0 }, g_SwapchainExtent };
+			renderInfo.layerCount = 1;
+			renderInfo.colorAttachmentCount = (u32)std::size(colorAttachementsInfo);
+			renderInfo.pColorAttachments = colorAttachementsInfo;
+			renderInfo.pDepthAttachment = nullptr;
+			renderInfo.pStencilAttachment = nullptr;
+			vkCmdBeginRendering(cmd, &renderInfo);
+
+			vkCmdDraw(cmd, 6, 1, 0, 0); // full screen quad :)
+
+			vkCmdEndRendering(cmd);
+		}
+	}
+
+	// todo: fix barriers, VkUtils::TransitionImage sucks
 	// prepare for copying to swapchain
-	VkUtils::TransitionImage(cmd, g_DrawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	VkUtils::TransitionImage(cmd, g_CompositeFinal.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+	// todo: can vkAcquireNextImageKHR be moved down here???
 	VkUtils::TransitionImage(cmd, swapchainImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
 	// copy to swapchain
-	VkUtils::CopyImage(cmd, swapchainImage.image, g_DrawImage.image, g_SwapchainExtent, g_SwapchainExtent);
+	VkUtils::CopyImage(cmd, swapchainImage.image, g_CompositeFinal.image, g_SwapchainExtent, g_SwapchainExtent);
 
-	// prepare for imgui
-	VkUtils::TransitionImage(cmd, swapchainImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	
-	// imgui draw... potrebbe essere ovunuque
-	ImGuii();
-	ImGui::Render();
+	// imgui draw on swapchain
+	{
+		VkUtils::TransitionImage(cmd, swapchainImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-	VkRenderingAttachmentInfo swapchainColorAttachment = VkUtils::AttachmentInfo(swapchainImage.imageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	VkRenderingInfo swapchainRenderInfo = VkUtils::RenderingInfo(g_SwapchainExtent, &swapchainColorAttachment, nullptr);
+		// imgui draw... potrebbe essere ovunuque
+		ImGuii();
+		ImGui::Render();
 
-	vkCmdBeginRendering(cmd, &swapchainRenderInfo);
-	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-	vkCmdEndRendering(cmd);
+		VkRenderingAttachmentInfo swapchainColorAttachment = VkUtils::AttachmentInfo(swapchainImage.imageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		VkRenderingInfo swapchainRenderInfo = VkUtils::RenderingInfo(g_SwapchainExtent, &swapchainColorAttachment, nullptr);
+
+		vkCmdBeginRendering(cmd, &swapchainRenderInfo);
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+		vkCmdEndRendering(cmd);
+	}
 
 	// preapre for present
 	VkUtils::TransitionImage(cmd, swapchainImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -1028,11 +1334,9 @@ void NewFrame()
 	VkSemaphoreSubmitInfo waitInfo = VkUtils::SemaphoreSubmitInfo(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, frameData.swapchainSemaphore);
 	VkSemaphoreSubmitInfo signalInfo = VkUtils::SemaphoreSubmitInfo(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, swapchainImage.presentSemaphore);
 
-	VkSubmitInfo2 submit = VkUtils::SubmitInfo(&cmdInfo, &signalInfo, &waitInfo);
-
-	VkQueue gfxQueue = g_RendererContext.GetRendererDevice().GetGraphicsQueue();
-
 	// launch cmd on graphics queue
+	VkQueue gfxQueue = g_RendererContext.GetRendererDevice().GetGraphicsQueue();
+	VkSubmitInfo2 submit = VkUtils::SubmitInfo(&cmdInfo, &signalInfo, &waitInfo);
 	vkCheck(vkQueueSubmit2(gfxQueue, 1, &submit, frameData.fence));
 
 	// present
@@ -1061,6 +1365,7 @@ int main()
 	InitVulkan();
 	InitImgui();
 	
+	g_ResourceFactory.Init(&g_RendererContext);
 	g_AssetManager.Init(4);
 	LoadGeometry();
 		
@@ -1081,6 +1386,7 @@ int main()
 	}
 
 	g_AssetManager.Shutdown();
+	g_ResourceFactory.Shutdown();
 	ShutdownVulkan();
 
 	glfwDestroyWindow(g_Window);

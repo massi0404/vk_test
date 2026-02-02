@@ -149,16 +149,21 @@ void ResourceFactory::CreateTexture(Texture* texture)
     desc.tiling = VK_IMAGE_TILING_OPTIMAL;
     desc.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
-    texture->m_Image = VkUtils::CreateImage(m_Device, desc);
+    u32 renderQueue = m_Context->GetRendererDevice().GetGraphicsQueueFamilyIndex();
+    
+    texture->m_Image = VkUtils::CreateImage(m_Device, desc, m_StagingQueue.familyIndex, renderQueue);
 }
 
 void ResourceFactory::CreateMesh(Mesh* mesh)
 {
     // crea index buffer & vertex buffer
-    mesh->m_VertexBuffer = VkUtils::CreateBuffer(m_Device, mesh->GetVertexBufferSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-        | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    u32 renderQueue = m_Context->GetRendererDevice().GetGraphicsQueueFamilyIndex();
 
-    mesh->m_IndexBuffer = VkUtils::CreateBuffer(m_Device, mesh->GetIndexBufferSize(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    mesh->m_VertexBuffer = VkUtils::CreateBuffer(m_Device, mesh->GetVertexBufferSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_StagingQueue.familyIndex, renderQueue);
+
+    mesh->m_IndexBuffer = VkUtils::CreateBuffer(m_Device, mesh->GetIndexBufferSize(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_StagingQueue.familyIndex, renderQueue);
 
     // prendi il puntatore al vertex buffer
     VkBufferDeviceAddressInfo deviceAdressInfo = {};
@@ -227,21 +232,20 @@ void ResourceFactory::LoadPendingResources_LoaderThread(const std::vector<Pendin
             // change layout: undefined -> transfer
             {
                 VkImageMemoryBarrier barrier = {};
-                barrier.image = texture->m_Image.image;
                 barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                barrier.image = texture->m_Image.image;
+                barrier.srcAccessMask = VK_ACCESS_NONE; // VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; // VK_PIPELINE_STAGE_TRANSFER_BIT
                 barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
                 barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                barrier.srcQueueFamilyIndex = m_StagingQueue.familyIndex;
-                barrier.dstQueueFamilyIndex = m_StagingQueue.familyIndex;
+                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barrier.subresourceRange.baseMipLevel = 0;
-                barrier.subresourceRange.levelCount = 1;
+                barrier.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
                 barrier.subresourceRange.baseArrayLayer = 0;
-                barrier.subresourceRange.layerCount = 1;
+                barrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
                 barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-                vkCmdPipelineBarrier(m_StagingCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                vkCmdPipelineBarrier(m_StagingCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                     0, nullptr, 0, nullptr, 1, &barrier);
                 
                 VkBufferImageCopy imgRegion = {};
@@ -254,24 +258,28 @@ void ResourceFactory::LoadPendingResources_LoaderThread(const std::vector<Pendin
 
             // change layout: transfer -> read optimal + change queue family for exclusive sharing: transfer -> graphics
             {
+                // TODO: make sure this barrier makes sense and doesnt stall the pipeline, the first barrier should be correct, not sure about this one...
+                // how do I say that i don't need to unlock the dstAccessMask? I only need to wait for the copy to be done before transitioning. (Correlated to dstStageMask in the cmd)
                 VkImageMemoryBarrier barrier = {};
-                barrier.image = texture->m_Image.image;
                 barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                barrier.image = texture->m_Image.image;
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; // VK_PIPELINE_STAGE_TRANSFER_BIT
+                barrier.dstAccessMask = 0; // ??? non devo sbloccare nessuno
                 barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                 barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.srcQueueFamilyIndex = m_StagingQueue.familyIndex;
-                barrier.dstQueueFamilyIndex = m_Context->GetRendererDevice().GetGraphicsQueueFamilyIndex();
+                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barrier.subresourceRange.baseMipLevel = 0;
-                barrier.subresourceRange.levelCount = 1;
+                barrier.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
                 barrier.subresourceRange.baseArrayLayer = 0;
-                barrier.subresourceRange.layerCount = 1;
+                barrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
                 barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
                 vkCmdPipelineBarrier(m_StagingCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                     0, nullptr, 0, nullptr, 1, &barrier);
             }
+
+            
         }
         else if (res.type == EResourceType::MeshBuffer)
         {
@@ -310,7 +318,7 @@ void ResourceFactory::LoadPendingResources_LoaderThread(const std::vector<Pendin
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &m_StagingCmd;
-    vkQueueSubmit(m_StagingQueue.queue, 1, &submitInfo, m_StagingFence);
+    vkCheck(vkQueueSubmit(m_StagingQueue.queue, 1, &submitInfo, m_StagingFence));
 
     // wait...
     vkWaitForFences(m_Device, 1, &m_StagingFence, VK_TRUE, 0xffffffffffffffff);

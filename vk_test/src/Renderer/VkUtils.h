@@ -45,9 +45,13 @@ namespace VkUtils {
 	VkImageSubresourceRange ImageRange(VkImageAspectFlags aspect);
 
 	Buffer CreateBuffer(VkDevice device, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryFlags);
+	Buffer CreateBuffer(VkDevice device, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryFlags, u32 uploadQueue, u32 renderQueue);
+
 	void DestroyBuffer(VkDevice device, Buffer buffer);
 
 	Image CreateImage(VkDevice device, const ImageDesc& image_desc);
+	Image CreateImage(VkDevice device, const ImageDesc& imageDesc, u32 uplaodQueue, u32 renderQueue);
+
 	void DestroyImage(VkDevice device, const Image& image);
 
 	void CopyImage(VkCommandBuffer cmd, VkImage dst, VkImage src, VkExtent2D dst_size, VkExtent2D src_size);
@@ -61,6 +65,4 @@ namespace VkUtils {
 	VkRenderingAttachmentInfo AttachmentInfo(VkImageView view, VkClearValue* clear, VkImageLayout layout);
 	VkRenderingAttachmentInfo AttachmentInfoDepth(VkImageView view, VkImageLayout layout);
 	VkRenderingInfo RenderingInfo(VkExtent2D render_extent, VkRenderingAttachmentInfo* color_attachment, VkRenderingAttachmentInfo* depth_atatchment);
-
-	void ImmediateSubmit(VkDevice device, VkFence fence, VkCommandBuffer cmd, std::function<void(VkCommandBuffer)> func);
 }

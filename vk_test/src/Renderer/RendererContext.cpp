@@ -237,7 +237,7 @@ void RendererContext::Shutdown()
 static VKAPI_ATTR VkBool32 VKAPI_CALL VkDebugErrorCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
 {
-	constexpr bool kLogInfoEvents = false;
+	constexpr bool kLogInfoEvents = true;
 
 	ELogSeverity logSeverity = ELogSeverity::Info;
 
