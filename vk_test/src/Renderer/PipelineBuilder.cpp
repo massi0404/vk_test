@@ -12,7 +12,7 @@ void GraphicsPipelineBuilder::Clear()
 	m_ViewportSize = {};
 }
 
-MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device)
+MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device, VkPipelineLayout layout)
 {
 	MyVkPipeline result;
 
@@ -182,15 +182,22 @@ MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device)
 	renderInfo.depthAttachmentFormat = m_DepthMode ? m_DepthMode->format : VK_FORMAT_UNDEFINED;
 
 	// layout... uniform, push constants etc...
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
-	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = m_Descriptors.size(); // Optional
-	pipelineLayoutInfo.pSetLayouts = m_Descriptors.data(); // Optional
-	pipelineLayoutInfo.pushConstantRangeCount = m_PushConstants.size(); // Optional
-	pipelineLayoutInfo.pPushConstantRanges = m_PushConstants.data(); // Optional
+	if (layout)
+	{
+		result.layout = layout;
+	}
+	else
+	{
+		VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pipelineLayoutInfo.setLayoutCount = m_Descriptors.size(); // Optional
+		pipelineLayoutInfo.pSetLayouts = m_Descriptors.data(); // Optional
+		pipelineLayoutInfo.pushConstantRangeCount = m_PushConstants.size(); // Optional
+		pipelineLayoutInfo.pPushConstantRanges = m_PushConstants.data(); // Optional
 
-	VkResult layoutCreateRes = vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &result.layout);
-	vkCheck(layoutCreateRes);
+		VkResult layoutCreateRes = vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &result.layout);
+		vkCheck(layoutCreateRes);
+	}
 
 	// pipelineeee
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};

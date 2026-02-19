@@ -7,6 +7,20 @@
 #include "Engine.h"
 #include "ResourceFactory.h"
 
+void PrintNodes(fastgltf::Expected<fastgltf::Asset>& gltf, fastgltf::Node* node, int tabCount = 0)
+{
+    std::cout << "\n";
+    for (int i = 0; i < tabCount; i++)
+        std::cout << '\t';
+    std::cout << node->name;
+
+    for (size_t childIndex : node->children)
+    {
+        fastgltf::Node* children = &gltf->nodes[childIndex];
+        PrintNodes(gltf, children, tabCount + 1);
+    }
+}
+
 void Mesh::Load(const std::filesystem::path& path)
 {
     fastgltf::Expected<fastgltf::GltfDataBuffer> data = fastgltf::GltfDataBuffer::FromPath(path);
@@ -115,6 +129,8 @@ void Mesh::Load(const std::filesystem::path& path)
         }
     }
     
+    //PrintNodes(gltf, &gltf->nodes[0], 0);
+
     constexpr bool kOverrideColors = true;
     if constexpr (kOverrideColors)
     {

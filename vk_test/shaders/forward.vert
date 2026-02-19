@@ -1,11 +1,9 @@
 #version 450
 #extension GL_EXT_buffer_reference : require
 
-layout (location = 0) out vec3 outColor; // for albedo
-layout (location = 1) out vec2 outUV; // for albedo
-layout (location = 2) out vec3 outNormal; // for lighting
-layout (location = 3) out vec3 outEntityID; // misc, mouse picking bla bla
-layout(location = 4) out vec3 outPosition; // for lighting
+layout(location = 0) out vec2 outTexCoords;
+layout(location = 1) out vec3 outNormal;
+layout(location = 2) out vec3 outWorldPos;
 
 struct Vertex {
 	vec3 position;
@@ -34,11 +32,11 @@ void main()
 
 	//output data
 	gl_Position = PushConstants.render_matrix * vec4(v.position, 1.0f);
+
+	outTexCoords = vec2(v.uv_x, v.uv_y);
 	
-	outColor = v.color.xyz;
-	outUV.x = v.uv_x;
-	outUV.y = v.uv_y;
-	outNormal = vec4(v.normal, 1.0f).xyz;
-	outEntityID = vec3(0.0, 0.0, 1.0); // blue for debug
-	outPosition = vec4(v.position, 1.0f).xyz;
+	//outNormal = (PushConstants.model_matrix * vec4(v.normal, 1.0f)).xyz;
+	outNormal = mat3(transpose(inverse(PushConstants.model_matrix))) * v.normal;
+
+	outWorldPos = (PushConstants.model_matrix * vec4(v.position, 1.0f)).xyz;
 }

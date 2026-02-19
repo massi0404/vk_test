@@ -32,7 +32,7 @@ public:
 	~GraphicsPipelineBuilder() = default;
 
 	void Clear();
-	MyVkPipeline Build(VkDevice device);
+	MyVkPipeline Build(VkDevice device, VkPipelineLayout layout = VK_NULL_HANDLE);
 
 public:
 	std::string m_VertexShader;

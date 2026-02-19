@@ -30,12 +30,6 @@
 
 #include "Math/Math.h"
 
-struct UniformBuffer
-{
-	VkUtils::Buffer buffer;
-	void* mappedMemory = nullptr;
-};
-
 struct FrameData
 {
 	VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -45,7 +39,8 @@ struct FrameData
 	DeletionQueue deletionQueue;
 	VkDescriptorSet descriptorGBuffer = VK_NULL_HANDLE;
 	VkDescriptorSet descriptorCompose = VK_NULL_HANDLE;
-	UniformBuffer uniformBuffer0;
+	VkDescriptorSet descriptorForward = VK_NULL_HANDLE;
+	VkUtils::Buffer uniformBufferLighting;
 };
 
 struct SwapchainImage
@@ -67,6 +62,7 @@ constexpr VkFormat GBUFFER_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 constexpr VkFormat GBUFFER_ALBEDO_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat GBUFFER_NORMALS_FORMAT = VK_FORMAT_R16G16B16A16_SNORM;
 constexpr VkFormat GBUFFER_ENTITY_FORMAT = VK_FORMAT_R16G16B16A16_UINT;
+constexpr VkFormat GBUFFER_POSITIONS_FORMAT = VK_FORMAT_R16G16B16A16_SNORM;
 
 // swapchain
 VkSwapchainKHR g_Swapchain = VK_NULL_HANDLE;
@@ -82,6 +78,7 @@ VkUtils::Image g_GBuffer_Depth;
 VkUtils::Image g_GBuffer_Albedo;
 VkUtils::Image g_GBuffer_Normals;
 VkUtils::Image g_GBuffer_Entity;
+VkUtils::Image g_GBuffer_Positions;
 
 VkUtils::Image g_CompositeFinal;
 
@@ -97,6 +94,7 @@ VkDescriptorPool g_DescriptorPool = VK_NULL_HANDLE;
 
 VkDescriptorSetLayout g_Gfx_GBuffer_DSLayout = VK_NULL_HANDLE;
 VkDescriptorSetLayout g_Gfx_Compose_DSLayout = VK_NULL_HANDLE;
+VkDescriptorSetLayout g_Gfx_Forward_DSLayout = VK_NULL_HANDLE;
 
 VkDescriptorSetLayout g_ComputeDSLayout = VK_NULL_HANDLE;
 VkDescriptorSet g_ComputeDS = VK_NULL_HANDLE;
@@ -106,6 +104,8 @@ MyVkPipeline g_ComputePipeline;
 
 MyVkPipeline g_GfxPipelineDeferred_GBuffer;
 MyVkPipeline g_GfxPipelineDeferred_Compose;
+MyVkPipeline g_GfxPipelineForward;
+MyVkPipeline g_GfxPipelineForward_Simple;
 
 // push constants
 struct PushConstant0
@@ -122,9 +122,10 @@ PushConstant0 g_ColorPushConst = {
 };
 
 // geometry data
-struct MeshPushConstant
+struct MeshPushConstant // todo: gia oltre i 128 bytes per le push constant lol
 {
 	glm::mat4 worldMatrix;
+	glm::mat4 modelMatrix;
 	VkDeviceAddress vertexBuffer;
 };
 
@@ -140,12 +141,12 @@ Transform g_MeshTransform;
 double g_Time = 0.0;
 float g_FrameTime = 0.0f; // seconds
 
-struct UniBuffBoh
+struct UniBuffLighting
 {
-	glm::vec4 color0;
-	glm::vec4 color1;
-	glm::vec4 color2;
-	glm::vec4 color3;
+	glm::vec4 ambient;
+	glm::vec4 sunPos; // directional light source
+	glm::vec4 sunColor;
+	glm::vec4 viewPos;
 };
 
 void CreateSwapchain()
@@ -334,6 +335,7 @@ void CreatePipeline()
 		computePushConstant0.offset = 0;
 		computePushConstant0.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+		//ComputePipelineBuilder& computeBuilder = s_PipelineTemplates_Compute.emplace_back();
 		ComputePipelineBuilder computeBuilder;
 		computeBuilder.m_ComputeShader = "shaders/bin/comp.spv";
 		computeBuilder.m_Descriptors = { g_ComputeDSLayout };
@@ -352,7 +354,7 @@ void CreatePipeline()
 		GraphicsPipelineBuilder graphicsBuilder;
 		graphicsBuilder.m_VertexShader = "shaders/bin/vert_gbuffer.spv";
 		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_gbuffer.spv";
-		graphicsBuilder.m_ColorAttachments = { GBUFFER_ALBEDO_FORMAT, GBUFFER_NORMALS_FORMAT, GBUFFER_ENTITY_FORMAT };
+		graphicsBuilder.m_ColorAttachments = { GBUFFER_ALBEDO_FORMAT, GBUFFER_NORMALS_FORMAT, GBUFFER_ENTITY_FORMAT, GBUFFER_POSITIONS_FORMAT };
 		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
 		graphicsBuilder.m_PushConstants = { meshPushConst };
 		graphicsBuilder.m_Descriptors = { g_Gfx_GBuffer_DSLayout };
@@ -364,7 +366,7 @@ void CreatePipeline()
 		*/
 		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_GREATER_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
 
-		g_GfxPipelineDeferred_GBuffer = graphicsBuilder.Build(device);
+		g_GfxPipelineDeferred_GBuffer = graphicsBuilder.Build(device, g_GfxPipelineDeferred_GBuffer.layout);
 	}
 
 	// graphics pipeline compose
@@ -376,20 +378,32 @@ void CreatePipeline()
 		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
 		graphicsBuilder.m_Descriptors = { g_Gfx_Compose_DSLayout };
 
-		g_GfxPipelineDeferred_Compose = graphicsBuilder.Build(device);
+		g_GfxPipelineDeferred_Compose = graphicsBuilder.Build(device, g_GfxPipelineDeferred_Compose.layout);
 	}
 
-	// cleanup
-	g_RendererContext.QueueShutdownFunc([device]() {
-		vkDestroyPipeline(device, g_GfxPipelineDeferred_GBuffer.pipeline, nullptr);
-		vkDestroyPipelineLayout(device, g_GfxPipelineDeferred_GBuffer.layout, nullptr);
+	// graphics pipeline forward
+	{
+		VkPushConstantRange meshPushConst;
+		meshPushConst.size = sizeof(MeshPushConstant);
+		meshPushConst.offset = 0;
+		meshPushConst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-		vkDestroyPipeline(device, g_GfxPipelineDeferred_Compose.pipeline, nullptr);
-		vkDestroyPipelineLayout(device, g_GfxPipelineDeferred_Compose.layout, nullptr);
+		GraphicsPipelineBuilder graphicsBuilder;
+		graphicsBuilder.m_VertexShader = "shaders/bin/vert_forward.spv";
+		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_forward.spv";
+		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
+		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
+		graphicsBuilder.m_PushConstants = { meshPushConst };
+		graphicsBuilder.m_Descriptors = { g_Gfx_Forward_DSLayout };
+		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_GREATER_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
 
-		vkDestroyPipeline(device, g_ComputePipeline.pipeline, nullptr);
-		vkDestroyPipelineLayout(device, g_ComputePipeline.layout, nullptr);
-	});
+		g_GfxPipelineForward = graphicsBuilder.Build(device, g_GfxPipelineForward.layout);
+
+		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_forward_simple.spv";
+		//graphicsBuilder.m_DepthMode.reset();
+
+		g_GfxPipelineForward_Simple = graphicsBuilder.Build(device, g_GfxPipelineForward.layout);
+	}
 }
 
 //void CreateFramebuffers()
@@ -534,6 +548,9 @@ void CreateRenderImage()
 
 	gbufferAttachmentTemplate.format = GBUFFER_ENTITY_FORMAT;
 	g_GBuffer_Entity = VkUtils::CreateImage(device, gbufferAttachmentTemplate);
+	
+	gbufferAttachmentTemplate.format = GBUFFER_POSITIONS_FORMAT;
+	g_GBuffer_Positions = VkUtils::CreateImage(device, gbufferAttachmentTemplate);
 
 	gbufferAttachmentTemplate.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 	gbufferAttachmentTemplate.aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -553,6 +570,7 @@ void CreateRenderImage()
 		VkUtils::DestroyImage(device, g_GBuffer_Albedo);
 		VkUtils::DestroyImage(device, g_GBuffer_Normals);
 		VkUtils::DestroyImage(device, g_GBuffer_Entity);
+		VkUtils::DestroyImage(device, g_GBuffer_Positions);
 		VkUtils::DestroyImage(device, g_GBuffer_Depth);
 		VkUtils::DestroyImage(device, g_CompositeFinal);
 	});
@@ -603,7 +621,7 @@ void CreateDescriptors()
 	{
 		// GBuffer pipeline
 		{
-			VkDescriptorSetLayoutBinding bindings[2];
+			VkDescriptorSetLayoutBinding bindings[1];
 
 			// texture
 			bindings[0].binding = 0;
@@ -611,13 +629,6 @@ void CreateDescriptors()
 			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 			bindings[0].pImmutableSamplers = nullptr;
-
-			// uniformbuffer0
-			bindings[1].binding = 1;
-			bindings[1].descriptorCount = 1; // array count
-			bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[1].pImmutableSamplers = nullptr;
 
 			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -628,7 +639,7 @@ void CreateDescriptors()
 
 		// Compose pipeline
 		{
-			VkDescriptorSetLayoutBinding bindings[3];
+			VkDescriptorSetLayoutBinding bindings[5];
 
 			// albedo
 			bindings[0].binding = 0;
@@ -651,6 +662,20 @@ void CreateDescriptors()
 			bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 			bindings[2].pImmutableSamplers = nullptr;
 
+			// positions
+			bindings[3].binding = 3;
+			bindings[3].descriptorCount = 1; // array count
+			bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[3].pImmutableSamplers = nullptr;
+
+			// lighting
+			bindings[4].binding = 4;
+			bindings[4].descriptorCount = 1; // array count
+			bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[4].pImmutableSamplers = nullptr;
+
 			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 			layoutInfo.pBindings = bindings;
@@ -658,10 +683,39 @@ void CreateDescriptors()
 			vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_Gfx_Compose_DSLayout));
 		}
 
-		constexpr u32 kDescriptorsCount = FRAMES_IN_FLIGHT + FRAMES_IN_FLIGHT; // gbuffer pipeline, compose pipeline
+		// Forward pipeline
+		{
+			VkDescriptorSetLayoutBinding bindings[2];
+
+			// texture
+			bindings[0].binding = 0;
+			bindings[0].descriptorCount = 1; // array count
+			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[0].pImmutableSamplers = nullptr;
+
+			// lighting
+			bindings[1].binding = 1;
+			bindings[1].descriptorCount = 1; // array count
+			bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			bindings[1].pImmutableSamplers = nullptr;
+
+			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+			layoutInfo.pBindings = bindings;
+			layoutInfo.bindingCount = (u32)std::size(bindings);
+			vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_Gfx_Forward_DSLayout));
+		}
+
+		constexpr u32 kDescriptorsCount = 3 * FRAMES_IN_FLIGHT; // gbuffer pipeline, compose pipeline, forward pipeline (compute ignored)
 
 		VkDescriptorSet gfxSets[kDescriptorsCount];
-		VkDescriptorSetLayout gfxLayouts[kDescriptorsCount] = { g_Gfx_GBuffer_DSLayout, g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Compose_DSLayout };
+		
+		VkDescriptorSetLayout gfxLayouts[3 * FRAMES_IN_FLIGHT] = { // initialized just for 2 fifs, make a loop
+			g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Forward_DSLayout,
+			g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Forward_DSLayout
+		};
 
 		VkDescriptorSetAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -670,29 +724,101 @@ void CreateDescriptors()
 		allocInfo.pSetLayouts = gfxLayouts;
 		vkAllocateDescriptorSets(device, &allocInfo, gfxSets);
 
+		VkDescriptorImageInfo descriptorTextures[4];
+
+		descriptorTextures[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		descriptorTextures[0].sampler = g_TextureSamplerBasic;
+		descriptorTextures[0].imageView = g_GBuffer_Albedo.view;
+
+		descriptorTextures[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		descriptorTextures[1].sampler = g_TextureSamplerBasic;
+		descriptorTextures[1].imageView = g_GBuffer_Normals.view;
+
+		descriptorTextures[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		descriptorTextures[2].sampler = g_TextureSamplerBasic;
+		descriptorTextures[2].imageView = g_GBuffer_Entity.view;
+
+		descriptorTextures[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		descriptorTextures[3].sampler = g_TextureSamplerBasic;
+		descriptorTextures[3].imageView = g_GBuffer_Positions.view;
+
+		VkDescriptorSet* currentFrameSet = gfxSets;
 		for (u32 i = 0; i < FRAMES_IN_FLIGHT; i++)
 		{
-			// uniform buffer
-			UniformBuffer& uniform0 = g_FramesData[i].uniformBuffer0;
-			
-			uniform0.buffer = VkUtils::CreateBuffer(device, sizeof(UniBuffBoh), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT /* :( pero se la cambiamo ogni frame... */ | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-			vkMapMemory(device, uniform0.buffer.memory, 0, sizeof(UniBuffBoh), 0, &uniform0.mappedMemory);
+			VkDescriptorSet gbufferSet = currentFrameSet[0];
+			VkDescriptorSet composeSet = currentFrameSet[1];
+			VkDescriptorSet forwardSet = currentFrameSet[2];
 
-			// descriptors
-			g_FramesData[i].descriptorGBuffer = gfxSets[i];
-			g_FramesData[i].descriptorCompose = gfxSets[i + 2];
+			// attachements
+			VkWriteDescriptorSet descriptorWriteTemplate = {};
+			descriptorWriteTemplate.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWriteTemplate.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			descriptorWriteTemplate.dstSet = composeSet;
+			descriptorWriteTemplate.descriptorCount = 1; // array size
+			descriptorWriteTemplate.dstArrayElement = 0; // array index
+
+			VkWriteDescriptorSet descriptorWrites[4];
+			
+			descriptorWrites[0] = descriptorWriteTemplate;
+			descriptorWrites[0].dstBinding = 0;
+			descriptorWrites[0].pImageInfo = &descriptorTextures[0];
+
+			descriptorWrites[1] = descriptorWriteTemplate;
+			descriptorWrites[1].dstBinding = 1;
+			descriptorWrites[1].pImageInfo = &descriptorTextures[1];
+
+			descriptorWrites[2] = descriptorWriteTemplate;
+			descriptorWrites[2].dstBinding = 2;
+			descriptorWrites[2].pImageInfo = &descriptorTextures[2];
+
+			descriptorWrites[3] = descriptorWriteTemplate;
+			descriptorWrites[3].dstBinding = 3;
+			descriptorWrites[3].pImageInfo = &descriptorTextures[3];
+
+			vkUpdateDescriptorSets(device, 4, descriptorWrites, 0, nullptr);
+
+			// uniform buffer
+			VkUtils::Buffer uniBuffLighting = VkUtils::CreateBuffer(device, sizeof(UniBuffLighting),
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+			VkDescriptorBufferInfo unibuffInfo = {};
+			unibuffInfo.buffer = uniBuffLighting.buffer;
+			unibuffInfo.offset = 0;
+			unibuffInfo.range = sizeof(UniBuffLighting);
+
+			VkWriteDescriptorSet unibuffWrite = {};
+			unibuffWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			unibuffWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			unibuffWrite.descriptorCount = 1; // array count
+			unibuffWrite.pBufferInfo = &unibuffInfo;
+
+			unibuffWrite.dstSet = composeSet;
+			unibuffWrite.dstBinding = 4;
+			vkUpdateDescriptorSets(device, 1, &unibuffWrite, 0, nullptr);
+
+			unibuffWrite.dstSet = forwardSet;
+			unibuffWrite.dstBinding = 1;
+			vkUpdateDescriptorSets(device, 1, &unibuffWrite, 0, nullptr);
+
+			g_FramesData[i].descriptorGBuffer = gbufferSet;
+			g_FramesData[i].descriptorCompose = composeSet;
+			g_FramesData[i].descriptorForward = forwardSet;
+			g_FramesData[i].uniformBufferLighting = uniBuffLighting;
+
+			currentFrameSet += 3;
 		}
 	}
 
 	g_RendererContext.QueueShutdownFunc([device]() {
 		vkDestroyDescriptorPool(device, g_DescriptorPool, nullptr);
+
 		vkDestroyDescriptorSetLayout(device, g_ComputeDSLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, g_Gfx_GBuffer_DSLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, g_Gfx_Compose_DSLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, g_Gfx_Forward_DSLayout, nullptr);
 
 		for (FrameData& frameData : g_FramesData)
-			VkUtils::DestroyBuffer(device, frameData.uniformBuffer0.buffer);
+			VkUtils::DestroyBuffer(device, frameData.uniformBufferLighting);
 	});
 }
 
@@ -794,7 +920,7 @@ static float s_CamFOV = 60.0f;
 static ImVec2 s_MousePos = {};
 static float s_MouseSens = 0.1f;
 
-static UniBuffBoh s_ShaderUniBuff = {};
+static UniBuffLighting s_UniBuffLighting = {};
 static Texture* s_BoundTexture = nullptr;
 
 void LoadGeometry()
@@ -803,8 +929,9 @@ void LoadGeometry()
 	g_MeshTransform.position = { 0.0f, -3.0f, 8.0f };
 
 	std::filesystem::path meshesToLoad[] = {
+		std::filesystem::path("assets") / "cube.glb"
 		//std::filesystem::path("assets") / "car.glb"
-		std::filesystem::path("assets") / "diorama.glb"
+		//std::filesystem::path("assets") / "diorama.glb"
 		//std::filesystem::path("assets") / "chisa_wuthering_waves.glb"
 	};
 
@@ -829,7 +956,11 @@ void LoadGeometry()
 	g_LoadingState.loadTarget = g_Meshes.size() + g_Textures.size();
 
 	s_BoundTexture = g_Textures[0]; // doom
-	s_ShaderUniBuff.color0 = glm::vec4(1.0f);
+
+	s_UniBuffLighting.ambient = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
+	s_UniBuffLighting.sunPos = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+	s_UniBuffLighting.sunColor = glm::vec4(1.0f);
+	s_UniBuffLighting.viewPos = glm::vec4(1.0f);
 
 	g_RendererContext.QueueShutdownFunc([]() {
 		for (auto mesh : g_Meshes)
@@ -857,12 +988,29 @@ void InitVulkan()
 	CreateCommands();
 	CreateRenderImage();
 
+	CreateTextureSamplers();
+	
 	CreateDescriptors();
 
 	//CreateRenderPass(); dynamic_rendering yeee
 	CreatePipeline();
+
+	VkDevice device = g_RendererContext.GetDevice();
+	g_RendererContext.QueueShutdownFunc([device]() {
+		vkDestroyPipeline(device, g_GfxPipelineForward.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineForward_Simple .pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineForward.layout, nullptr);
+
+		vkDestroyPipeline(device, g_GfxPipelineDeferred_GBuffer.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineDeferred_GBuffer.layout, nullptr);
+
+		vkDestroyPipeline(device, g_GfxPipelineDeferred_Compose.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineDeferred_Compose.layout, nullptr);
+
+		vkDestroyPipeline(device, g_ComputePipeline.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_ComputePipeline.layout, nullptr);
+	});
 	//CreateFramebuffers(); dynamic_rendering yeee
-	CreateTextureSamplers();
 }
 
 void ShutdownVulkan()
@@ -870,6 +1018,8 @@ void ShutdownVulkan()
 	vkCheck(vkDeviceWaitIdle(g_RendererContext.GetDevice()));
 	g_RendererContext.Shutdown();
 }
+
+static bool pipelinesAreDirty = false;
 
 void ImGuii()
 {
@@ -921,7 +1071,9 @@ void ImGuii()
 
 	ImGui::Separator();
 
-	ImGui::ColorEdit4("Uniform buffer 'color0'", glm::value_ptr(s_ShaderUniBuff.color0));
+	ImGui::ColorEdit4("Lighting - Ambient", glm::value_ptr(s_UniBuffLighting.ambient));
+	ImGui::DragFloat3("Lighting - Sun pos (directional light src)", glm::value_ptr(s_UniBuffLighting.sunPos));
+	ImGui::ColorEdit3("Lighting - Sun color (directional light color)", glm::value_ptr(s_UniBuffLighting.sunColor));
 
 	ImGui::Separator();
 
@@ -935,6 +1087,13 @@ void ImGuii()
 	ImGui::DragFloat3("Model Location", glm::value_ptr(g_MeshTransform.position), 0.005f);
 	ImGui::DragFloat3("Model Rotation", glm::value_ptr(g_MeshTransform.rotation), 0.1f);
 	ImGui::DragFloat3("Model Scale", glm::value_ptr(g_MeshTransform.scale), 0.005f);
+
+	ImGui::Separator();
+
+	if (ImGui::Button("Reload shaders (in realta pipeline)"))
+	{
+		pipelinesAreDirty = true;
+	}
 
 	ImGui::End();
 }
@@ -999,8 +1158,25 @@ void Update(float deltaTime)
 
 void NewFrame()
 {
-	//LOG_WARN("New frame!");
 	VkDevice device = g_RendererContext.GetDevice();
+
+	if (pipelinesAreDirty)
+	{
+		system("if 1==1 \"shaders/compile.bat\""); // a quanto pare aspetta finche non ha finito, gg
+
+		vkDeviceWaitIdle(device);
+		
+		vkDestroyPipeline(device, g_GfxPipelineDeferred_GBuffer.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineDeferred_Compose.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineForward.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineForward_Simple.pipeline, nullptr);
+		
+		CreatePipeline();
+
+		pipelinesAreDirty = false;
+	}
+
+	//LOG_WARN("New frame!");
 
 	FrameData& frameData = g_FramesData[g_FrameIndex];
 
@@ -1043,6 +1219,19 @@ void NewFrame()
 	scissor.extent.height = g_SwapchainExtent.height;
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
+	glm::vec3 camRotRadians = glm::radians(s_CamRot);
+
+	glm::vec3 camForward = Math::Forward(camRotRadians);
+	glm::vec3 camRight = Math::Right(camRotRadians);
+	glm::vec3 camUp = glm::cross(camForward, camRight);
+
+	glm::mat4 view = glm::lookAtLH(s_CamPos, camForward + s_CamPos, camUp);
+	view = view * glm::rotate(camRotRadians.z, glm::vec3(0.0f, 0.0f, 1.0f));
+
+	glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(s_CamFOV), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
+
+#if 0 // deferred
+
 	// Pipeline gbuffers
 	{
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_GBuffer.pipeline);
@@ -1052,7 +1241,7 @@ void NewFrame()
 		{
 			VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
 
-			VkImageMemoryBarrier2 barriers[3];
+			VkImageMemoryBarrier2 barriers[4];
 
 			VkImageMemoryBarrier2 clearBarrier = {};
 			clearBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -1076,7 +1265,7 @@ void NewFrame()
 
 			VkDependencyInfo depInfo = {};
 			depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-			depInfo.imageMemoryBarrierCount = 3;
+			depInfo.imageMemoryBarrierCount = 4;
 			depInfo.pImageMemoryBarriers = barriers;
 
 			barriers[0] = clearBarrier;
@@ -1085,6 +1274,8 @@ void NewFrame()
 			barriers[1].image = g_GBuffer_Normals.image;
 			barriers[2] = clearBarrier;
 			barriers[2].image = g_GBuffer_Entity.image;
+			barriers[3] = clearBarrier;
+			barriers[3].image = g_GBuffer_Positions.image;
 			vkCmdPipelineBarrier2(cmd, &depInfo);
 
 			barriers[0] = renderBarrier;
@@ -1093,22 +1284,13 @@ void NewFrame()
 			barriers[1].image = g_GBuffer_Normals.image;
 			barriers[2] = renderBarrier;
 			barriers[2].image = g_GBuffer_Entity.image;
+			barriers[3] = renderBarrier;
+			barriers[3].image = g_GBuffer_Positions.image;
 			vkCmdPipelineBarrier2(cmd, &depInfo);
 		}
 
 		// render
 		{
-			glm::vec3 camRotRadians = glm::radians(s_CamRot);
-
-			glm::vec3 camForward = Math::Forward(camRotRadians);
-			glm::vec3 camRight = Math::Right(camRotRadians);
-			glm::vec3 camUp = glm::cross(camForward, camRight);
-
-			glm::mat4 view = glm::lookAtLH(s_CamPos, camForward + s_CamPos, camUp);
-			view = view * glm::rotate(camRotRadians.z, glm::vec3(0.0f, 0.0f, 1.0f));
-
-			glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(s_CamFOV), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
-
 			VkClearValue clear;
 			clear.color.float32[0] = 0.2f;
 			clear.color.float32[1] = 0.4f;
@@ -1118,7 +1300,8 @@ void NewFrame()
 			VkRenderingAttachmentInfo colorAttachementsInfo[] = {
 				VkUtils::AttachmentInfo(g_GBuffer_Albedo.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
 				VkUtils::AttachmentInfo(g_GBuffer_Normals.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
-				VkUtils::AttachmentInfo(g_GBuffer_Entity.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+				VkUtils::AttachmentInfo(g_GBuffer_Entity.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+				VkUtils::AttachmentInfo(g_GBuffer_Positions.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
 			};
 
 			VkRenderingAttachmentInfo depthAttachmentInfo = VkUtils::AttachmentInfoDepth(g_GBuffer_Depth.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
@@ -1145,6 +1328,7 @@ void NewFrame()
 
 				MeshPushConstant meshPushConst;
 				meshPushConst.worldMatrix = proj * view * model;
+				meshPushConst.modelMatrix = model;
 				meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
 				vkCmdPushConstants(cmd, g_GfxPipelineDeferred_GBuffer.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
 
@@ -1179,13 +1363,24 @@ void NewFrame()
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.layout, 0, 1, &frameData.descriptorCompose, 0, nullptr);
 
+		/*glm::mat4 sunWorldPos = glm::translate((glm::vec3)s_UniBuffLighting.sunPos);
+
+		glm::mat4 sunMVP = proj * view * sunWorldPos;
+
+
+
+		glm::vec3 oldPos = s_UniBuffLighting.sunPos;
+		s_UniBuffLighting.sunPos = sunMVP; */
+
+		vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
+
 		// Barriers
 		{
 			VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
 			
 			// attachments
 			{
-				VkImageMemoryBarrier2 barriers[3];
+				VkImageMemoryBarrier2 barriers[4];
 
 				VkImageMemoryBarrier2 renderBarrier = {};
 				renderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -1203,10 +1398,12 @@ void NewFrame()
 				barriers[1].image = g_GBuffer_Normals.image;
 				barriers[2] = renderBarrier;
 				barriers[2].image = g_GBuffer_Entity.image;
+				barriers[3] = renderBarrier;
+				barriers[3].image = g_GBuffer_Positions.image;
 
 				VkDependencyInfo depInfoRender = {};
 				depInfoRender.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-				depInfoRender.imageMemoryBarrierCount = 3;
+				depInfoRender.imageMemoryBarrierCount = 4;
 				depInfoRender.pImageMemoryBarriers = barriers;
 				vkCmdPipelineBarrier2(cmd, &depInfoRender);
 			}
@@ -1249,30 +1446,6 @@ void NewFrame()
 
 		// Draw
 		{
-			VkDescriptorImageInfo descriptorTextures[3];
-
-			descriptorTextures[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			descriptorTextures[0].sampler = g_TextureSamplerBasic;
-			descriptorTextures[0].imageView = g_GBuffer_Albedo.view;
-
-			descriptorTextures[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			descriptorTextures[1].sampler = g_TextureSamplerBasic;
-			descriptorTextures[1].imageView = g_GBuffer_Normals.view;
-
-			descriptorTextures[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			descriptorTextures[2].sampler = g_TextureSamplerBasic;
-			descriptorTextures[2].imageView = g_GBuffer_Entity.view;
-
-			VkWriteDescriptorSet descriptorWrite = {};
-			descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrite.dstSet = frameData.descriptorCompose;
-			descriptorWrite.dstArrayElement = 0;
-			descriptorWrite.dstBinding = 0;
-			descriptorWrite.pImageInfo = descriptorTextures;
-			descriptorWrite.descriptorCount = 1;
-			descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr); // todo: update normals & entity
-
 			VkClearValue clear;
 			clear.color.float32[0] = 0.2f;
 			clear.color.float32[1] = 0.4f;
@@ -1298,6 +1471,129 @@ void NewFrame()
 			vkCmdEndRendering(cmd);
 		}
 	}
+#else
+	
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.pipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.layout, 0, 1, &frameData.descriptorForward, 0, nullptr);
+
+	s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
+	vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
+
+	// clear barriers
+	{
+			VkImageMemoryBarrier2 barriers[2] = {};
+
+VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+
+// clear barrier
+barriers[0] = {};
+barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+barriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+barriers[0].dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+barriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+barriers[0].subresourceRange = subimageRange;
+barriers[0].image = g_CompositeFinal.image;
+
+// render barrier
+barriers[1] = {};
+barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+barriers[1].srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+barriers[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+barriers[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+barriers[1].subresourceRange = subimageRange;
+barriers[1].image = g_CompositeFinal.image;
+
+VkDependencyInfo depInfo = {};
+depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+depInfo.imageMemoryBarrierCount = 2;
+depInfo.pImageMemoryBarriers = barriers;
+vkCmdPipelineBarrier2(cmd, &depInfo);
+		}
+
+	// render
+	{
+		VkClearValue clear;
+		clear.color.float32[0] = 0.2f;
+		clear.color.float32[1] = 0.4f;
+		clear.color.float32[2] = 0.6f;
+		clear.color.float32[3] = 1.0f;
+
+		VkRenderingAttachmentInfo colorAttachementsInfo[] = {
+			VkUtils::AttachmentInfo(g_CompositeFinal.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+		};
+
+		VkRenderingAttachmentInfo depthAttachmentInfo = VkUtils::AttachmentInfoDepth(g_GBuffer_Depth.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+		VkRenderingInfo renderInfo = {};
+		renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+		renderInfo.renderArea = VkRect2D{ VkOffset2D { 0, 0 }, g_SwapchainExtent };
+		renderInfo.layerCount = 1;
+		renderInfo.colorAttachmentCount = (u32)std::size(colorAttachementsInfo);
+		renderInfo.pColorAttachments = colorAttachementsInfo;
+		renderInfo.pDepthAttachment = &depthAttachmentInfo;
+		renderInfo.pStencilAttachment = nullptr;
+		vkCmdBeginRendering(cmd, &renderInfo);
+
+		Mesh* mesh = g_Meshes[0];
+		if (mesh->IsLoaded() && s_BoundTexture && s_BoundTexture->IsLoaded())
+		{
+			// push constants
+			glm::mat4 modelRotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
+				* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
+				* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+
+			glm::mat4 model = glm::translate(g_MeshTransform.position) * modelRotation * glm::scale(g_MeshTransform.scale);
+
+			MeshPushConstant meshPushConst;
+			meshPushConst.worldMatrix = proj * view * model;
+			meshPushConst.modelMatrix = model;
+			meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
+			vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+			// descriptors :(
+			VkDescriptorImageInfo descriptorTexture;
+			descriptorTexture.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			descriptorTexture.sampler = g_TextureSamplerBasic;
+			descriptorTexture.imageView = s_BoundTexture->GetImage().view;
+
+			VkWriteDescriptorSet descriptorWrite = {};
+			descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrite.dstSet = frameData.descriptorForward;
+			descriptorWrite.dstArrayElement = 0;
+			descriptorWrite.dstBinding = 0;
+			descriptorWrite.pImageInfo = &descriptorTexture;
+			descriptorWrite.descriptorCount = 1;
+			descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+
+			// draw calls
+			vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+			for (const Submesh& submesh : mesh->GetSubmeshes())
+				vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
+
+			model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
+
+			meshPushConst.worldMatrix = proj * view * model;
+			meshPushConst.modelMatrix = model;
+			vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+			vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+			for (const Submesh& submesh : mesh->GetSubmeshes())
+				vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+		}
+
+		vkCmdEndRendering(cmd);
+	}
+
+#endif
 
 	// todo: fix barriers, VkUtils::TransitionImage sucks
 	// prepare for copying to swapchain
