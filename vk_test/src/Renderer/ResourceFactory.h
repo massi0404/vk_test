@@ -37,6 +37,9 @@ public:
 	void CreateTexture(Texture* texture);
 	void CreateMesh(Mesh* mesh);
 
+	void DestroyMesh(Mesh* mesh);
+	void DestroyTexture(Texture* texture);
+
 	void PushLoading(const PendingLoadingRes& res);
 	u32 PullLoaded(std::vector<PendingLoadingRes>& outLoadedRes);
 

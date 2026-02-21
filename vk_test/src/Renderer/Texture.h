@@ -28,6 +28,8 @@ public:
 	void SetData(const void* data, u64 size, const TextureDesc& desc);
 	void ClearData();
 
+	void CreateOnGPU();
+
 	inline const std::vector<u8>& GetData() const { return m_Data; }
 	inline const TextureDesc& GetDesc() const { return m_Desc; }
 

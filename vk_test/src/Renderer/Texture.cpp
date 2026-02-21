@@ -28,8 +28,6 @@ void Texture::Load(const std::filesystem::path& path)
     m_Desc.width = (u32)width;
     m_Desc.height = (u32)height;
 
-    g_ResourceFactory.CreateTexture(this);
-
     DebugName = path.string();
 }
 
@@ -54,8 +52,6 @@ void Texture::SetData(const void* data, u64 size, const TextureDesc& desc)
     memcpy(m_Data.data(), data, size);
 
     m_Desc = desc;
-
-    g_ResourceFactory.CreateTexture(this);
 }
 
 void Texture::ClearData()
@@ -64,4 +60,9 @@ void Texture::ClearData()
     m_Data.shrink_to_fit(); // free actual memory
 
     m_Desc = {};
+}
+
+void Texture::CreateOnGPU()
+{
+    g_ResourceFactory.CreateTexture(this);
 }

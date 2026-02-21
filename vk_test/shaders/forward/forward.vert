@@ -36,7 +36,7 @@ void main()
 	outTexCoords = vec2(v.uv_x, v.uv_y);
 	
 	//outNormal = (PushConstants.model_matrix * vec4(v.normal, 1.0f)).xyz;
-	outNormal = mat3(transpose(inverse(PushConstants.model_matrix))) * v.normal;
+	outNormal = mat3(transpose(inverse(PushConstants.model_matrix))) * v.normal; // normal matrix
 
 	outWorldPos = (PushConstants.model_matrix * vec4(v.position, 1.0f)).xyz;
 }

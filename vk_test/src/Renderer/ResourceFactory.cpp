@@ -172,6 +172,22 @@ void ResourceFactory::CreateMesh(Mesh* mesh)
     mesh->m_VertexBufferAddress = vkGetBufferDeviceAddress(m_Device, &deviceAdressInfo);
 }
 
+void ResourceFactory::DestroyMesh(Mesh* mesh)
+{
+    VkUtils::DestroyBuffer(m_Device, mesh->m_VertexBuffer);
+    VkUtils::DestroyBuffer(m_Device, mesh->m_IndexBuffer);
+
+    mesh->m_VertexBuffer = {};
+    mesh->m_IndexBuffer = {};
+    mesh->m_VertexBufferAddress = 0;
+}
+
+void ResourceFactory::DestroyTexture(Texture* texture)
+{
+    VkUtils::DestroyImage(m_Device, texture->m_Image);
+    texture->m_Image = {};
+}
+
 void ResourceFactory::PushLoading(const PendingLoadingRes& res)
 {
     std::lock_guard<std::mutex> lock(m_PendingLoadingLock);

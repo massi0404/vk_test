@@ -22,6 +22,7 @@ Mesh* AssetManager::LoadMesh(const std::filesystem::path& path)
 	m_AsyncLoader.AddTask([mesh, path]() {
 		// disk -> ram
 		mesh->Load(path);
+		mesh->CreateOnGPU();
 		LOG_INFO("Asset manager: Mesh %s loaded on ram! (%.2f MB)", path.string().c_str(), Utils::BytesToMegabytes(mesh->GetMemoryFootprint()));
 		// ram -> vram
 		PendingLoadingRes res;
@@ -42,6 +43,7 @@ Texture* AssetManager::LoadTexture(const std::filesystem::path& path)
 	m_AsyncLoader.AddTask([texture, path]() {
 		// disk -> ram
 		texture->Load(path);
+		texture->CreateOnGPU();
 		LOG_INFO("Asset manager: Texture %s loaded on ram! (%.2f MB)", path.string().c_str(), Utils::BytesToMegabytes(texture->GetMemoryFootprint()));
 		// ram -> vram
 		PendingLoadingRes res;

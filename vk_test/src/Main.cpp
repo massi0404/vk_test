@@ -406,31 +406,6 @@ void CreatePipeline()
 	}
 }
 
-//void CreateFramebuffers()
-//{
-//	// boh... voodoo
-//
-//	for (int i = 0; i < g_SwapchainImageViews.size(); i++)
-//	{
-//		VkImageView attachments[1] = {
-//			g_SwapchainImageViews[i]
-//		};
-//
-//		VkFramebufferCreateInfo framebufferInfo = {};
-//		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-//		framebufferInfo.renderPass = g_RenderPass;
-//		framebufferInfo.attachmentCount = 1;
-//		framebufferInfo.pAttachments = attachments;
-//		framebufferInfo.width = g_SwapchainExtent.width;
-//		framebufferInfo.height = g_SwapchainExtent.height;
-//		framebufferInfo.layers = 1;
-//
-//		VkFramebuffer& newFramebufferHandle = g_Framebuffers.emplace_back();
-//		VkResult res = vkCreateFramebuffer(g_Device, &framebufferInfo, nullptr, &newFramebufferHandle);
-//		vkCheck(res);
-//	}
-//}
-
 void CreateCommands()
 {
 	VkCommandPoolCreateInfo commandPoolInfo = {};
@@ -594,20 +569,13 @@ void CreateDescriptors()
 	poolInfo.pPoolSizes = poolSizes;
 	vkCheck(vkCreateDescriptorPool(device, &poolInfo, nullptr, &g_DescriptorPool));
 
-	// compute
+	// Compute
 	{
-		VkDescriptorSetLayoutBinding bindings[1];
-		bindings[0].binding = 0;
-		bindings[0].descriptorCount = 1; // array count
-		bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-		bindings[0].pImmutableSamplers = nullptr;
+		VkUtils::DescSetBinding bindings[] = {
+			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 }
+		};
 
-		VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-		layoutInfo.pBindings = bindings;
-		layoutInfo.bindingCount = (u32)std::size(bindings);
-		vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_ComputeDSLayout));
+		g_ComputeDSLayout = VkUtils::CreateDescSetLayout(device, bindings);
 
 		VkDescriptorSetAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -617,196 +585,96 @@ void CreateDescriptors()
 		vkCheck(vkAllocateDescriptorSets(device, &allocInfo, &g_ComputeDS));
 	}
 
-	// gfx
+	// Gfx: Deferred pipeline - GBuffer
 	{
-		// GBuffer pipeline
-		{
-			VkDescriptorSetLayoutBinding bindings[1];
-
-			// texture
-			bindings[0].binding = 0;
-			bindings[0].descriptorCount = 1; // array count
-			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[0].pImmutableSamplers = nullptr;
-
-			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-			layoutInfo.pBindings = bindings;
-			layoutInfo.bindingCount = (u32)std::size(bindings);
-			vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_Gfx_GBuffer_DSLayout));
-		}
-
-		// Compose pipeline
-		{
-			VkDescriptorSetLayoutBinding bindings[5];
-
-			// albedo
-			bindings[0].binding = 0;
-			bindings[0].descriptorCount = 1; // array count
-			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[0].pImmutableSamplers = nullptr;
-
-			// normals
-			bindings[1].binding = 1;
-			bindings[1].descriptorCount = 1; // array count
-			bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[1].pImmutableSamplers = nullptr;
-
-			// entity id
-			bindings[2].binding = 2;
-			bindings[2].descriptorCount = 1; // array count
-			bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[2].pImmutableSamplers = nullptr;
-
-			// positions
-			bindings[3].binding = 3;
-			bindings[3].descriptorCount = 1; // array count
-			bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[3].pImmutableSamplers = nullptr;
-
-			// lighting
-			bindings[4].binding = 4;
-			bindings[4].descriptorCount = 1; // array count
-			bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[4].pImmutableSamplers = nullptr;
-
-			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-			layoutInfo.pBindings = bindings;
-			layoutInfo.bindingCount = (u32)std::size(bindings);
-			vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_Gfx_Compose_DSLayout));
-		}
-
-		// Forward pipeline
-		{
-			VkDescriptorSetLayoutBinding bindings[2];
-
-			// texture
-			bindings[0].binding = 0;
-			bindings[0].descriptorCount = 1; // array count
-			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[0].pImmutableSamplers = nullptr;
-
-			// lighting
-			bindings[1].binding = 1;
-			bindings[1].descriptorCount = 1; // array count
-			bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[1].pImmutableSamplers = nullptr;
-
-			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-			layoutInfo.pBindings = bindings;
-			layoutInfo.bindingCount = (u32)std::size(bindings);
-			vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_Gfx_Forward_DSLayout));
-		}
-
-		constexpr u32 kDescriptorsCount = 3 * FRAMES_IN_FLIGHT; // gbuffer pipeline, compose pipeline, forward pipeline (compute ignored)
-
-		VkDescriptorSet gfxSets[kDescriptorsCount];
-		
-		VkDescriptorSetLayout gfxLayouts[3 * FRAMES_IN_FLIGHT] = { // initialized just for 2 fifs, make a loop
-			g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Forward_DSLayout,
-			g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Forward_DSLayout
+		VkUtils::DescSetBinding bindings[] = {
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } // texture
 		};
 
-		VkDescriptorSetAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = g_DescriptorPool;
-		allocInfo.descriptorSetCount = kDescriptorsCount;
-		allocInfo.pSetLayouts = gfxLayouts;
-		vkAllocateDescriptorSets(device, &allocInfo, gfxSets);
+		g_Gfx_GBuffer_DSLayout = VkUtils::CreateDescSetLayout(device, bindings);
+	}
 
-		VkDescriptorImageInfo descriptorTextures[4];
+	// Gfx: Deferred pipeline - Final compose
+	{
+		VkUtils::DescSetBinding bindings[] = {
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },	// albedo
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },	// normals
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },	// entity id
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },	// positions
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }			// lighting
+		};
 
-		descriptorTextures[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		descriptorTextures[0].sampler = g_TextureSamplerBasic;
-		descriptorTextures[0].imageView = g_GBuffer_Albedo.view;
+		g_Gfx_Compose_DSLayout = VkUtils::CreateDescSetLayout(device, bindings);
+	}
 
-		descriptorTextures[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		descriptorTextures[1].sampler = g_TextureSamplerBasic;
-		descriptorTextures[1].imageView = g_GBuffer_Normals.view;
+	// Gfx: Forward pipeline
+	{
+		VkUtils::DescSetBinding bindings[] = {
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },	// texture
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },			// lighting
+		};
 
-		descriptorTextures[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		descriptorTextures[2].sampler = g_TextureSamplerBasic;
-		descriptorTextures[2].imageView = g_GBuffer_Entity.view;
+		g_Gfx_Forward_DSLayout = VkUtils::CreateDescSetLayout(device, bindings);
+	}
 
-		descriptorTextures[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		descriptorTextures[3].sampler = g_TextureSamplerBasic;
-		descriptorTextures[3].imageView = g_GBuffer_Positions.view;
+	constexpr u32 kDescriptorsCount = 3 * FRAMES_IN_FLIGHT; // gbuffer pipeline, compose pipeline, forward pipeline (compute ignored)
 
-		VkDescriptorSet* currentFrameSet = gfxSets;
-		for (u32 i = 0; i < FRAMES_IN_FLIGHT; i++)
+	VkDescriptorSet gfxSets[kDescriptorsCount];
+
+	VkDescriptorSetLayout gfxLayouts[3 * FRAMES_IN_FLIGHT] = { // initialized just for 2 fifs, make a loop
+		g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Forward_DSLayout,
+		g_Gfx_GBuffer_DSLayout, g_Gfx_Compose_DSLayout, g_Gfx_Forward_DSLayout
+	};
+
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = g_DescriptorPool;
+	allocInfo.descriptorSetCount = kDescriptorsCount;
+	allocInfo.pSetLayouts = gfxLayouts;
+	vkAllocateDescriptorSets(device, &allocInfo, gfxSets);
+
+	VkUtils::DescSetUpdate bindingsUpdate[] = {
 		{
-			VkDescriptorSet gbufferSet = currentFrameSet[0];
-			VkDescriptorSet composeSet = currentFrameSet[1];
-			VkDescriptorSet forwardSet = currentFrameSet[2];
-
-			// attachements
-			VkWriteDescriptorSet descriptorWriteTemplate = {};
-			descriptorWriteTemplate.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWriteTemplate.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWriteTemplate.dstSet = composeSet;
-			descriptorWriteTemplate.descriptorCount = 1; // array size
-			descriptorWriteTemplate.dstArrayElement = 0; // array index
-
-			VkWriteDescriptorSet descriptorWrites[4];
-			
-			descriptorWrites[0] = descriptorWriteTemplate;
-			descriptorWrites[0].dstBinding = 0;
-			descriptorWrites[0].pImageInfo = &descriptorTextures[0];
-
-			descriptorWrites[1] = descriptorWriteTemplate;
-			descriptorWrites[1].dstBinding = 1;
-			descriptorWrites[1].pImageInfo = &descriptorTextures[1];
-
-			descriptorWrites[2] = descriptorWriteTemplate;
-			descriptorWrites[2].dstBinding = 2;
-			descriptorWrites[2].pImageInfo = &descriptorTextures[2];
-
-			descriptorWrites[3] = descriptorWriteTemplate;
-			descriptorWrites[3].dstBinding = 3;
-			descriptorWrites[3].pImageInfo = &descriptorTextures[3];
-
-			vkUpdateDescriptorSets(device, 4, descriptorWrites, 0, nullptr);
-
-			// uniform buffer
-			VkUtils::Buffer uniBuffLighting = VkUtils::CreateBuffer(device, sizeof(UniBuffLighting),
-				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-			VkDescriptorBufferInfo unibuffInfo = {};
-			unibuffInfo.buffer = uniBuffLighting.buffer;
-			unibuffInfo.offset = 0;
-			unibuffInfo.range = sizeof(UniBuffLighting);
-
-			VkWriteDescriptorSet unibuffWrite = {};
-			unibuffWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			unibuffWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			unibuffWrite.descriptorCount = 1; // array count
-			unibuffWrite.pBufferInfo = &unibuffInfo;
-
-			unibuffWrite.dstSet = composeSet;
-			unibuffWrite.dstBinding = 4;
-			vkUpdateDescriptorSets(device, 1, &unibuffWrite, 0, nullptr);
-
-			unibuffWrite.dstSet = forwardSet;
-			unibuffWrite.dstBinding = 1;
-			vkUpdateDescriptorSets(device, 1, &unibuffWrite, 0, nullptr);
-
-			g_FramesData[i].descriptorGBuffer = gbufferSet;
-			g_FramesData[i].descriptorCompose = composeSet;
-			g_FramesData[i].descriptorForward = forwardSet;
-			g_FramesData[i].uniformBufferLighting = uniBuffLighting;
-
-			currentFrameSet += 3;
+			.image = { g_TextureSamplerBasic, g_GBuffer_Albedo.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		},
+		{
+			.image = { g_TextureSamplerBasic, g_GBuffer_Normals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		},
+		{
+			.image = { g_TextureSamplerBasic, g_GBuffer_Entity.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		},
+		{
+			.image = { g_TextureSamplerBasic, g_GBuffer_Positions.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		}
+	};
+
+	VkDescriptorSet* currentFrameSet = gfxSets;
+	for (u32 i = 0; i < FRAMES_IN_FLIGHT; i++)
+	{
+		VkDescriptorSet gbufferSet = currentFrameSet[0];
+		VkDescriptorSet composeSet = currentFrameSet[1];
+		VkDescriptorSet forwardSet = currentFrameSet[2];
+		
+		// attachments
+		VkUtils::UpdateDescBindings(device, composeSet, bindingsUpdate, 0);
+
+		// uniform buffer for lighitng
+		VkUtils::Buffer uniBuffLighting = VkUtils::CreateBuffer(device, sizeof(UniBuffLighting),
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		VkUtils::UpdateDescBinding(device, composeSet, uniBuffLighting.buffer, sizeof(UniBuffLighting), 4);
+		VkUtils::UpdateDescBinding(device, forwardSet, uniBuffLighting.buffer, sizeof(UniBuffLighting), 1);
+
+		g_FramesData[i].descriptorGBuffer = gbufferSet;
+		g_FramesData[i].descriptorCompose = composeSet;
+		g_FramesData[i].descriptorForward = forwardSet;
+		g_FramesData[i].uniformBufferLighting = uniBuffLighting;
+
+		currentFrameSet += 3;
 	}
 
 	g_RendererContext.QueueShutdownFunc([device]() {
@@ -929,7 +797,9 @@ void LoadGeometry()
 	g_MeshTransform.position = { 0.0f, -3.0f, 8.0f };
 
 	std::filesystem::path meshesToLoad[] = {
-		std::filesystem::path("assets") / "cube.glb"
+		std::filesystem::path("assets") / "cube.glb",
+		std::filesystem::path("assets") / "cube.glb",
+		//std::filesystem::path("assets") / "diorama.glb"
 		//std::filesystem::path("assets") / "car.glb"
 		//std::filesystem::path("assets") / "diorama.glb"
 		//std::filesystem::path("assets") / "chisa_wuthering_waves.glb"
@@ -1019,7 +889,8 @@ void ShutdownVulkan()
 	g_RendererContext.Shutdown();
 }
 
-static bool pipelinesAreDirty = false;
+static bool s_PipelinesAreDirty = false;
+static bool s_Deferred = false;
 
 void ImGuii()
 {
@@ -1092,8 +963,10 @@ void ImGuii()
 
 	if (ImGui::Button("Reload shaders (in realta pipeline)"))
 	{
-		pipelinesAreDirty = true;
+		s_PipelinesAreDirty = true;
 	}
+
+	ImGui::Checkbox("Deferred (broken)", &s_Deferred);
 
 	ImGui::End();
 }
@@ -1160,7 +1033,7 @@ void NewFrame()
 {
 	VkDevice device = g_RendererContext.GetDevice();
 
-	if (pipelinesAreDirty)
+	if (s_PipelinesAreDirty)
 	{
 		system("if 1==1 \"shaders/compile.bat\""); // a quanto pare aspetta finche non ha finito, gg
 
@@ -1173,7 +1046,7 @@ void NewFrame()
 		
 		CreatePipeline();
 
-		pipelinesAreDirty = false;
+		s_PipelinesAreDirty = false;
 	}
 
 	//LOG_WARN("New frame!");
@@ -1230,67 +1103,19 @@ void NewFrame()
 
 	glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(s_CamFOV), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
 
-#if 0 // deferred
-
-	// Pipeline gbuffers
+	if (s_Deferred)
 	{
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_GBuffer.pipeline);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_GBuffer.layout, 0, 1, &frameData.descriptorGBuffer, 0, nullptr);
+		VkImage images[] = { g_GBuffer_Albedo.image, g_GBuffer_Normals.image, g_GBuffer_Entity.image, g_GBuffer_Positions.image };
 
-		// Barriers (clear & attach)
+		// Pipeline gbuffers
 		{
-			VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_GBuffer.pipeline);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_GBuffer.layout, 0, 1, &frameData.descriptorGBuffer, 0, nullptr);
 
-			VkImageMemoryBarrier2 barriers[4];
+			VkUtils::TransitionImages(cmd, VkUtils::ImageLayout::Undefined, VkUtils::ImageLayout::Clear, images);
+			VkUtils::TransitionImages(cmd, VkUtils::ImageLayout::Clear, VkUtils::ImageLayout::RenderTarget, images);
 
-			VkImageMemoryBarrier2 clearBarrier = {};
-			clearBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-			clearBarrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-			clearBarrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-			clearBarrier.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-			clearBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-			clearBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			clearBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-			clearBarrier.subresourceRange = subimageRange;
-
-			VkImageMemoryBarrier2 renderBarrier = {};
-			renderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-			renderBarrier.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-			renderBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-			renderBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-			renderBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-			renderBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			renderBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			renderBarrier.subresourceRange = subimageRange;
-
-			VkDependencyInfo depInfo = {};
-			depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-			depInfo.imageMemoryBarrierCount = 4;
-			depInfo.pImageMemoryBarriers = barriers;
-
-			barriers[0] = clearBarrier;
-			barriers[0].image = g_GBuffer_Albedo.image;
-			barriers[1] = clearBarrier;
-			barriers[1].image = g_GBuffer_Normals.image;
-			barriers[2] = clearBarrier;
-			barriers[2].image = g_GBuffer_Entity.image;
-			barriers[3] = clearBarrier;
-			barriers[3].image = g_GBuffer_Positions.image;
-			vkCmdPipelineBarrier2(cmd, &depInfo);
-
-			barriers[0] = renderBarrier;
-			barriers[0].image = g_GBuffer_Albedo.image;
-			barriers[1] = renderBarrier;
-			barriers[1].image = g_GBuffer_Normals.image;
-			barriers[2] = renderBarrier;
-			barriers[2].image = g_GBuffer_Entity.image;
-			barriers[3] = renderBarrier;
-			barriers[3].image = g_GBuffer_Positions.image;
-			vkCmdPipelineBarrier2(cmd, &depInfo);
-		}
-
-		// render
-		{
+			// render
 			VkClearValue clear;
 			clear.color.float32[0] = 0.2f;
 			clear.color.float32[1] = 0.4f;
@@ -1316,10 +1141,14 @@ void NewFrame()
 			renderInfo.pStencilAttachment = nullptr;
 			vkCmdBeginRendering(cmd, &renderInfo);
 
-			Mesh* mesh = g_Meshes[0];
-			if (mesh->IsLoaded() && s_BoundTexture && s_BoundTexture->IsLoaded())
+			bool boundTextureAvail = s_BoundTexture && s_BoundTexture->IsLoaded();
+
+			if (boundTextureAvail)
+				VkUtils::UpdateDescBinding(device, frameData.descriptorGBuffer, s_BoundTexture->GetImage().view, g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0);
+
+			Mesh* modelMesh = g_Meshes[1];
+			if (modelMesh->IsLoaded() && boundTextureAvail)
 			{
-				// push constants
 				glm::mat4 modelRotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
 					* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
 					* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
@@ -1329,123 +1158,28 @@ void NewFrame()
 				MeshPushConstant meshPushConst;
 				meshPushConst.worldMatrix = proj * view * model;
 				meshPushConst.modelMatrix = model;
-				meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
+				meshPushConst.vertexBuffer = modelMesh->GetVertexBufferAddress();
 				vkCmdPushConstants(cmd, g_GfxPipelineDeferred_GBuffer.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
 
-				// descriptors :(
-				VkDescriptorImageInfo descriptorTexture;
-				descriptorTexture.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				descriptorTexture.sampler = g_TextureSamplerBasic;
-				descriptorTexture.imageView = s_BoundTexture->GetImage().view;
-
-				VkWriteDescriptorSet descriptorWrite = {};
-				descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				descriptorWrite.dstSet = frameData.descriptorGBuffer;
-				descriptorWrite.dstArrayElement = 0;
-				descriptorWrite.dstBinding = 0;
-				descriptorWrite.pImageInfo = &descriptorTexture;
-				descriptorWrite.descriptorCount = 1;
-				descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-				vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-
-				// draw calls
-				vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-				for (const Submesh& submesh : mesh->GetSubmeshes())
+				vkCmdBindIndexBuffer(cmd, modelMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+				for (const Submesh& submesh : modelMesh->GetSubmeshes())
 					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
 			}
 
 			vkCmdEndRendering(cmd);
 		}
-	}
 
-	// Pipeline final composite
-	{
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.pipeline);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.layout, 0, 1, &frameData.descriptorCompose, 0, nullptr);
-
-		/*glm::mat4 sunWorldPos = glm::translate((glm::vec3)s_UniBuffLighting.sunPos);
-
-		glm::mat4 sunMVP = proj * view * sunWorldPos;
-
-
-
-		glm::vec3 oldPos = s_UniBuffLighting.sunPos;
-		s_UniBuffLighting.sunPos = sunMVP; */
-
-		vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
-
-		// Barriers
+		// Pipeline final composite
 		{
-			VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
-			
-			// attachments
-			{
-				VkImageMemoryBarrier2 barriers[4];
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.pipeline);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineDeferred_Compose.layout, 0, 1, &frameData.descriptorCompose, 0, nullptr);
 
-				VkImageMemoryBarrier2 renderBarrier = {};
-				renderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-				renderBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-				renderBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-				renderBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-				renderBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-				renderBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-				renderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				renderBarrier.subresourceRange = subimageRange;
+			s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
+			vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
 
-				barriers[0] = renderBarrier;
-				barriers[0].image = g_GBuffer_Albedo.image;
-				barriers[1] = renderBarrier;
-				barriers[1].image = g_GBuffer_Normals.image;
-				barriers[2] = renderBarrier;
-				barriers[2].image = g_GBuffer_Entity.image;
-				barriers[3] = renderBarrier;
-				barriers[3].image = g_GBuffer_Positions.image;
+			// Draw
+			VkUtils::TransitionImages(cmd, VkUtils::ImageLayout::RenderTarget, VkUtils::ImageLayout::SampleRead, images);
 
-				VkDependencyInfo depInfoRender = {};
-				depInfoRender.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-				depInfoRender.imageMemoryBarrierCount = 4;
-				depInfoRender.pImageMemoryBarriers = barriers;
-				vkCmdPipelineBarrier2(cmd, &depInfoRender);
-			}
-
-			// final image
-			{
-				VkImageMemoryBarrier2 barriers[2] = {};
-
-				// clear barrier
-				barriers[0] = {};
-				barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-				barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-				barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-				barriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-				barriers[0].dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-				barriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-				barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-				barriers[0].subresourceRange = subimageRange;
-				barriers[0].image = g_CompositeFinal.image;
-
-				// render barrier
-				barriers[1] = {};
-				barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-				barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-				barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-				barriers[1].srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-				barriers[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-				barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-				barriers[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-				barriers[1].subresourceRange = subimageRange;
-				barriers[1].image = g_CompositeFinal.image;
-
-				VkDependencyInfo depInfo = {};
-				depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-				depInfo.imageMemoryBarrierCount = 2;
-				depInfo.pImageMemoryBarriers = barriers;
-				vkCmdPipelineBarrier2(cmd, &depInfo);
-			}
-		}
-
-		// Draw
-		{
 			VkClearValue clear;
 			clear.color.float32[0] = 0.2f;
 			clear.color.float32[1] = 0.4f;
@@ -1455,6 +1189,9 @@ void NewFrame()
 			VkRenderingAttachmentInfo colorAttachementsInfo[] = {
 				VkUtils::AttachmentInfo(g_CompositeFinal.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
 			};
+
+			VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Undefined, VkUtils::ImageLayout::Clear, g_CompositeFinal.image);
+			VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Clear, VkUtils::ImageLayout::RenderTarget, g_CompositeFinal.image);
 
 			VkRenderingInfo renderInfo = {};
 			renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -1468,56 +1205,40 @@ void NewFrame()
 
 			vkCmdDraw(cmd, 6, 1, 0, 0); // full screen quad :)
 
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
+
+			Mesh* mesh = g_Meshes[0];
+			if (mesh->IsLoaded())
+			{
+				glm::mat4 model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
+
+				MeshPushConstant meshPushConst;
+				meshPushConst.worldMatrix = proj * view * model;
+				meshPushConst.modelMatrix = model;
+				meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
+				vkCmdPushConstants(cmd, g_GfxPipelineForward_Simple.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+				vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+				for (const Submesh& submesh : mesh->GetSubmeshes())
+					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+			}
+
 			vkCmdEndRendering(cmd);
 		}
+
 	}
-#else
-	
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.pipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.layout, 0, 1, &frameData.descriptorForward, 0, nullptr);
-
-	s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
-	vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
-
-	// clear barriers
+	else
 	{
-			VkImageMemoryBarrier2 barriers[2] = {};
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.layout, 0, 1, &frameData.descriptorForward, 0, nullptr);
 
-VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+		s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
+		vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
 
-// clear barrier
-barriers[0] = {};
-barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-barriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-barriers[0].dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-barriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-barriers[0].subresourceRange = subimageRange;
-barriers[0].image = g_CompositeFinal.image;
+		VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Undefined, VkUtils::ImageLayout::Clear, g_CompositeFinal.image);
+		VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Clear, VkUtils::ImageLayout::RenderTarget, g_CompositeFinal.image);
 
-// render barrier
-barriers[1] = {};
-barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-barriers[1].srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-barriers[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-barriers[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-barriers[1].subresourceRange = subimageRange;
-barriers[1].image = g_CompositeFinal.image;
-
-VkDependencyInfo depInfo = {};
-depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-depInfo.imageMemoryBarrierCount = 2;
-depInfo.pImageMemoryBarriers = barriers;
-vkCmdPipelineBarrier2(cmd, &depInfo);
-		}
-
-	// render
-	{
+		// render
 		VkClearValue clear;
 		clear.color.float32[0] = 0.2f;
 		clear.color.float32[1] = 0.4f;
@@ -1540,10 +1261,14 @@ vkCmdPipelineBarrier2(cmd, &depInfo);
 		renderInfo.pStencilAttachment = nullptr;
 		vkCmdBeginRendering(cmd, &renderInfo);
 
-		Mesh* mesh = g_Meshes[0];
-		if (mesh->IsLoaded() && s_BoundTexture && s_BoundTexture->IsLoaded())
+		bool boundTextureAvail = s_BoundTexture && s_BoundTexture->IsLoaded();
+
+		if (boundTextureAvail)
+			VkUtils::UpdateDescBinding(device, frameData.descriptorForward, s_BoundTexture->GetImage().view, g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0);
+
+		Mesh* modelMesh = g_Meshes[1];
+		if (modelMesh->IsLoaded() && boundTextureAvail)
 		{
-			// push constants
 			glm::mat4 modelRotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
 				* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
 				* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
@@ -1553,60 +1278,46 @@ vkCmdPipelineBarrier2(cmd, &depInfo);
 			MeshPushConstant meshPushConst;
 			meshPushConst.worldMatrix = proj * view * model;
 			meshPushConst.modelMatrix = model;
-			meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
+			meshPushConst.vertexBuffer = modelMesh->GetVertexBufferAddress();
 			vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
 
-			// descriptors :(
-			VkDescriptorImageInfo descriptorTexture;
-			descriptorTexture.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			descriptorTexture.sampler = g_TextureSamplerBasic;
-			descriptorTexture.imageView = s_BoundTexture->GetImage().view;
-
-			VkWriteDescriptorSet descriptorWrite = {};
-			descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrite.dstSet = frameData.descriptorForward;
-			descriptorWrite.dstArrayElement = 0;
-			descriptorWrite.dstBinding = 0;
-			descriptorWrite.pImageInfo = &descriptorTexture;
-			descriptorWrite.descriptorCount = 1;
-			descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-
-			// draw calls
-			vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-			for (const Submesh& submesh : mesh->GetSubmeshes())
+			vkCmdBindIndexBuffer(cmd, modelMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+			for (const Submesh& submesh : modelMesh->GetSubmeshes())
 				vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+		}
 
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
+		
+		Mesh* debugLightMesh = g_Meshes[0];
+		if (debugLightMesh->IsLoaded())
+		{
+			glm::mat4 model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
 
-			model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
-
+			MeshPushConstant meshPushConst;
 			meshPushConst.worldMatrix = proj * view * model;
 			meshPushConst.modelMatrix = model;
-			vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+			meshPushConst.vertexBuffer = debugLightMesh->GetVertexBufferAddress();
+			vkCmdPushConstants(cmd, g_GfxPipelineForward_Simple.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
 
-			vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-			for (const Submesh& submesh : mesh->GetSubmeshes())
+			vkCmdBindIndexBuffer(cmd, debugLightMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+			for (const Submesh& submesh : debugLightMesh->GetSubmeshes())
 				vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
 		}
 
 		vkCmdEndRendering(cmd);
 	}
 
-#endif
-
-	// todo: fix barriers, VkUtils::TransitionImage sucks
 	// prepare for copying to swapchain
-	VkUtils::TransitionImage(cmd, g_CompositeFinal.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::RenderTarget, VkUtils::ImageLayout::TransferSrc, g_CompositeFinal.image);
 
 	// todo: can vkAcquireNextImageKHR be moved down here???
-	VkUtils::TransitionImage(cmd, swapchainImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Undefined, VkUtils::ImageLayout::TransferDst, swapchainImage.image);
 	// copy to swapchain
 	VkUtils::CopyImage(cmd, swapchainImage.image, g_CompositeFinal.image, g_SwapchainExtent, g_SwapchainExtent);
 
 	// imgui draw on swapchain
 	{
-		VkUtils::TransitionImage(cmd, swapchainImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::TransferDst, VkUtils::ImageLayout::RenderTarget, swapchainImage.image);
 
 		// imgui draw... potrebbe essere ovunuque
 		ImGuii();
@@ -1621,7 +1332,7 @@ vkCmdPipelineBarrier2(cmd, &depInfo);
 	}
 
 	// preapre for present
-	VkUtils::TransitionImage(cmd, swapchainImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+	VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::RenderTarget, VkUtils::ImageLayout::Present, swapchainImage.image);
 
 	vkCheck(vkEndCommandBuffer(cmd));
 

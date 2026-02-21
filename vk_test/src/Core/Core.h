@@ -14,3 +14,4 @@
 
 #include "CoreMinimal.h"
 #include "Platform.h"
+#include "Buffer.h"

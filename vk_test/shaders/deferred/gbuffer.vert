@@ -38,7 +38,9 @@ void main()
 	outColor = v.color.xyz;
 	outUV.x = v.uv_x;
 	outUV.y = v.uv_y;
-	outNormal = vec4(v.normal, 1.0f).xyz;
+
+	//outNormal = (PushConstants.model_matrix * vec4(v.normal, 1.0f)).xyz;
+	outNormal = mat3(transpose(inverse(PushConstants.model_matrix))) * v.normal; // normal matrix
 	outEntityID = vec3(0.0, 0.0, 1.0); // blue for debug
-	outPosition = vec4(v.position, 1.0f).xyz;
+	outPosition = (PushConstants.model_matrix * vec4(v.position, 1.0f)).xyz;
 }

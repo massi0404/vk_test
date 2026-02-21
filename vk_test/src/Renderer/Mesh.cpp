@@ -137,11 +137,20 @@ void Mesh::Load(const std::filesystem::path& path)
         for (Vertex& v : m_Vertices)
             v.color = glm::vec4(v.normal, 1.0f);
     }
-
-    // create gpu vertex and index buffer (only create, no upload)
-    g_ResourceFactory.CreateMesh(this);
     
     DebugName = path.string();
+}
+
+void Mesh::SetData(TBufferView<Vertex> vertices, TBufferView<Index> indices, TBufferView<Submesh> submeshes)
+{
+    m_Vertices.resize(vertices.Count);
+    memcpy(m_Vertices.data(), vertices.Data, vertices.Count * sizeof(Vertex));
+
+    m_Indices.resize(indices.Count);
+    memcpy(m_Indices.data(), indices.Data, indices.Count * sizeof(Index));
+
+    m_Submeshes.resize(submeshes.Count);
+    memcpy(m_Submeshes.data(), submeshes.Data, submeshes.Count * sizeof(Submesh));
 }
 
 void Mesh::ClearData()
@@ -151,4 +160,9 @@ void Mesh::ClearData()
 
     m_Indices.clear();
     m_Indices.shrink_to_fit(); // same
+}
+
+void Mesh::CreateOnGPU()
+{
+    g_ResourceFactory.CreateMesh(this);
 }

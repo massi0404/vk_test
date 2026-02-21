@@ -331,4 +331,185 @@ namespace VkUtils {
         return renderInfo;
     }
 
+    VkDescriptorSetLayout CreateDescSetLayout(VkDevice device, TBufferView<DescSetBinding> bindings)
+    {
+        constexpr u32 MAX_BINDINGS = 12;
+        static thread_local VkDescriptorSetLayoutBinding vkBindings[MAX_BINDINGS];
+        
+        check(bindings.Count <= MAX_BINDINGS);
+
+        for (u32 i = 0; i < bindings.Count; i++)
+        {
+            const DescSetBinding& binding = bindings[i];
+
+            vkBindings[i].binding = i;
+            vkBindings[i].descriptorCount = binding.arrayCount;
+            vkBindings[i].descriptorType = binding.type;
+            vkBindings[i].pImmutableSamplers = nullptr;
+            vkBindings[i].stageFlags = VK_SHADER_STAGE_ALL;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.pBindings = vkBindings;
+        layoutInfo.bindingCount = bindings.Count;
+        
+        VkDescriptorSetLayout res;
+        vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &res));
+
+        return res;
+    }
+
+    void UpdateDescBindings(VkDevice device, VkDescriptorSet set, TBufferView<DescSetUpdate> bindings, u32 startBinding)
+    {
+        constexpr u32 MAX_BINDINGS = 12;
+        static thread_local VkWriteDescriptorSet vkWrites[MAX_BINDINGS];
+        static thread_local VkDescriptorBufferInfo vkBufferInfos[MAX_BINDINGS];
+        static thread_local VkDescriptorImageInfo vkImageInfos[MAX_BINDINGS];
+
+        check(bindings.Count <= MAX_BINDINGS);
+
+        VkDescriptorBufferInfo* currentBufferInfo = vkBufferInfos;
+        VkDescriptorImageInfo* currentImageInfo = vkImageInfos;
+
+        for (int i = 0; i < bindings.Count; i++)
+        {
+            VkWriteDescriptorSet& write = vkWrites[i];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = set;
+            write.dstBinding = startBinding + i;
+            write.descriptorType = bindings[i].type;
+            write.descriptorCount = 1;
+
+            switch (bindings[i].type)
+            {
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                *currentBufferInfo = bindings[i].buffer;
+                write.pBufferInfo = currentBufferInfo;
+                currentBufferInfo++;
+                break;
+
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                *currentImageInfo = bindings[i].image;
+                write.pImageInfo = currentImageInfo;
+                currentImageInfo++;
+                break;
+
+            default:
+                check(0);
+            }
+        }
+
+        vkUpdateDescriptorSets(device, bindings.Count, vkWrites, 0, nullptr);
+    }
+
+    void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkBuffer buffer, VkDeviceSize size, u32 binding)
+    {
+        VkDescriptorBufferInfo vkBufferInfo;
+        vkBufferInfo.buffer = buffer;
+        vkBufferInfo.offset = 0;
+        vkBufferInfo.range = size;
+
+        VkWriteDescriptorSet vkWrite = {};
+        vkWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vkWrite.dstSet = set;
+        vkWrite.dstBinding = binding;
+        vkWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        vkWrite.descriptorCount = 1;
+        vkWrite.pBufferInfo = &vkBufferInfo;
+
+        vkUpdateDescriptorSets(device, 1, &vkWrite, 0, nullptr);
+    }
+
+    void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkImageView imgView, VkSampler sampler, VkImageLayout layout, u32 binding)
+    {
+        VkDescriptorImageInfo vkImageInfo;
+        vkImageInfo.imageView = imgView;
+        vkImageInfo.imageLayout = layout;
+        vkImageInfo.sampler = sampler;
+
+        VkWriteDescriptorSet vkWrite = {};
+        vkWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vkWrite.dstSet = set;
+        vkWrite.dstBinding = binding;
+        vkWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        vkWrite.descriptorCount = 1;
+        vkWrite.pImageInfo = &vkImageInfo;
+
+        vkUpdateDescriptorSets(device, 1, &vkWrite, 0, nullptr);
+    }
+
+    static std::pair<VkPipelineStageFlagBits2, VkAccessFlagBits2> GetVkImageBarrierMask(ImageLayout layout)
+    {
+        switch (layout)
+        {
+            case Undefined:     return {};
+            case Clear:         return { VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT };
+            case RenderTarget:  return { VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT };
+            case SampleRead:    return { VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
+            case TransferSrc:   return { VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT };
+            case TransferDst:   return { VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT };
+            case Present:       return { VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT };
+        }
+
+        check(0);
+        return {};
+    }
+
+    static VkImageLayout GetVkImageNativeLayout(ImageLayout layout)
+    {
+        switch (layout)
+        {
+            case Undefined:     return VK_IMAGE_LAYOUT_UNDEFINED;
+            case Clear:         return VK_IMAGE_LAYOUT_GENERAL;
+            case RenderTarget:  return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            case SampleRead:    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            case TransferSrc:   return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            case TransferDst:   return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            case Present:       return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        }
+
+        check(0);
+        return VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
+    void TransitionImages(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TBufferView<VkImage> images)
+    {
+        constexpr u32 MAX_BARRIERS = 16;
+        static thread_local VkImageMemoryBarrier2 barriers[MAX_BARRIERS];
+
+        check(images.Count <= MAX_BARRIERS);
+
+        auto [srcStage, srcAccess] = GetVkImageBarrierMask(from);
+        auto [dstStage, dstAccess] = GetVkImageBarrierMask(to);
+        VkImageLayout nativeSrcLayout = GetVkImageNativeLayout(from);
+        VkImageLayout nativeDstLayout = GetVkImageNativeLayout(to);
+
+        VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+
+        for (u32 i = 0; i < images.Count; i++)
+        {
+            barriers[i] = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = srcStage, .srcAccessMask = srcAccess,
+                .dstStageMask = dstStage, .dstAccessMask = dstAccess,
+                .oldLayout = nativeSrcLayout,
+                .newLayout = nativeDstLayout,
+                .image = images[i],
+                .subresourceRange = subimageRange
+            };
+        }
+
+        VkDependencyInfo depInfo = {};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.imageMemoryBarrierCount = images.Count;
+        depInfo.pImageMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(cmd, &depInfo);
+    }
+
+    void TransitionImage(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, VkImage image)
+    {
+        VkImage images[] = {image};
+        TransitionImages(cmd, from, to, images);
+    }
 }

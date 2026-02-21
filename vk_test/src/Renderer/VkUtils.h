@@ -2,7 +2,7 @@
 
 #include <vulkan/vulkan.h>
 
-#include "Core/CoreMinimal.h"
+#include "Core/Core.h"
 
 #define vkCheck(VkCall) { VkResult vk_res = (VkCall);  check(vk_res == VK_SUCCESS) } 
 #define vkCheckSlow(VkRes) { CORE_ASSERT((VkRes) == VK_SUCCESS, "Vulkan error!"); }
@@ -65,4 +65,46 @@ namespace VkUtils {
 	VkRenderingAttachmentInfo AttachmentInfo(VkImageView view, VkClearValue* clear, VkImageLayout layout);
 	VkRenderingAttachmentInfo AttachmentInfoDepth(VkImageView view, VkImageLayout layout);
 	VkRenderingInfo RenderingInfo(VkExtent2D render_extent, VkRenderingAttachmentInfo* color_attachment, VkRenderingAttachmentInfo* depth_atatchment);
+
+	struct DescSetBinding
+	{
+		VkDescriptorType type;
+		u32 arrayCount;
+	};
+
+	VkDescriptorSetLayout CreateDescSetLayout(VkDevice device, TBufferView<DescSetBinding> bindings);
+
+	struct DescSetUpdate
+	{
+		union
+		{
+			VkDescriptorImageInfo image; // combined image sampler
+			VkDescriptorBufferInfo buffer; // uniform buffer
+		};
+
+		VkDescriptorType type;
+	};
+
+	// generic update, multiple bindings
+	void UpdateDescBindings(VkDevice device, VkDescriptorSet set, TBufferView<DescSetUpdate> bindings, u32 bindingStart);
+	// uniform buffer
+	void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkBuffer buffer, VkDeviceSize size, u32 binding);
+	// combined image sampler
+	void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkImageView imgView, VkSampler sampler, VkImageLayout layout, u32 binding);
+
+	// void UpdateDescBindingArray(); todo
+
+	enum ImageLayout
+	{
+		Undefined,
+		Clear, // general layout for clearing
+		RenderTarget, // color attachment optimal
+		SampleRead, // shader read optimal
+		TransferSrc,
+		TransferDst,
+		Present
+	};
+	
+	void TransitionImages(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TBufferView<VkImage> images);
+	void TransitionImage(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, VkImage image);
 }

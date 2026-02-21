@@ -167,6 +167,7 @@
   <ItemGroup>
     <ClInclude Include="src\AssetManager.h" />
     <ClInclude Include="src\Async\TaskPool.h" />
+    <ClInclude Include="src\Core\Buffer.h" />
     <ClInclude Include="src\Core\Core.h" />
     <ClInclude Include="src\Core\CoreMinimal.h" />
     <ClInclude Include="src\Core\Debug.h" />

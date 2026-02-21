@@ -28,7 +28,10 @@ public:
 	~Mesh() = default;
 
 	void Load(const std::filesystem::path& path);
+	void SetData(TBufferView<Vertex> vertices, TBufferView<Index> indices, TBufferView<Submesh> submeshes);
 	void ClearData();
+
+	void CreateOnGPU();
 
 	inline const std::vector<Vertex>& GetVertices() const { return m_Vertices; }
 	inline const std::vector<Index>& GetIndices() const { return m_Indices; }
@@ -62,7 +65,7 @@ private:
 
 	VkUtils::Buffer m_VertexBuffer;
 	VkUtils::Buffer m_IndexBuffer;
-	VkDeviceAddress m_VertexBufferAddress;
+	VkDeviceAddress m_VertexBufferAddress = 0;
 	bool m_IsLoaded = false;
 
 public:
