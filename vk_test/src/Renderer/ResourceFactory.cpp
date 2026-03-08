@@ -1,7 +1,7 @@
 #include "ResourceFactory.h"
 #include "VkUtils.h"
 
-constexpr u64 STAGING_BUFFER_SIZE = 256 * 1024 * 1024; // 256MB total staging mapped memory
+constexpr u64 STAGING_BUFFER_SIZE = 128 * 1024 * 1024; // 128MB total staging mapped memory
 
 ResourceFactory::ResourceFactory()
 	: m_Context(nullptr)

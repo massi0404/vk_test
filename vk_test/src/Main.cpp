@@ -781,7 +781,17 @@ LoadingState g_LoadingState;
 static std::vector<Mesh*> g_Meshes;
 static std::vector<Texture*> g_Textures;
 
-static glm::vec3 s_CamPos = { 3.3f, 1.3f, -13.0f };
+struct SceneEntity
+{
+	std::string debugName;
+	Mesh* mesh;
+	Transform transform;
+	bool visible;
+};
+
+static std::vector<SceneEntity> g_Entities;
+
+static glm::vec3 s_CamPos = { 0.0f, 0.0f, -25.0f };
 static glm::vec3 s_CamRot = { 0.0f, 0.0f, 0.0f };
 static float s_CamSpeed = 10.0f;
 static float s_CamFOV = 60.0f;
@@ -791,58 +801,61 @@ static float s_MouseSens = 0.1f;
 static UniBuffLighting s_UniBuffLighting = {};
 static Texture* s_BoundTexture = nullptr;
 
+static bool s_LightPosUpdate = true;
+
+static Texture s_DefaultTexture;
+
 void LoadGeometry()
 {
-	g_MeshTransform.rotation = { -90.0f, 200.0f, 0.0f };
-	g_MeshTransform.position = { 0.0f, -3.0f, 8.0f };
+	// default assets
+	u32 pixels[] = { 0xffffffff };
+	s_DefaultTexture.DebugName = "White texture";
+	s_DefaultTexture.SetData(pixels, sizeof(pixels), { 1, 1, EImageFormat::RGBA8 });
+	g_ResourceFactory.CreateTexture(&s_DefaultTexture);
+	g_ResourceFactory.PushLoading({
+		.texture = &s_DefaultTexture,
+		.size = s_DefaultTexture.GetMemoryFootprint(),
+		.type = EResourceType::Texture
+	});
 
-	std::filesystem::path meshesToLoad[] = {
-		std::filesystem::path("assets") / "cube.glb",
-		std::filesystem::path("assets") / "cube.glb",
-		//std::filesystem::path("assets") / "diorama.glb"
-		//std::filesystem::path("assets") / "car.glb"
-		//std::filesystem::path("assets") / "diorama.glb"
-		//std::filesystem::path("assets") / "chisa_wuthering_waves.glb"
-	};
+	// textures
+	g_Textures.push_back(&s_DefaultTexture);
+	g_Textures.push_back(g_AssetManager.LoadTexture(std::filesystem::path("assets") / "doom.jpg"));
+	g_Textures.push_back(g_AssetManager.LoadTexture(std::filesystem::path("assets") / "textures" / "brickwall.png"));
+	g_Textures.push_back(g_AssetManager.LoadTexture(std::filesystem::path("assets") / "textures" / "grass.png"));
 
-	std::filesystem::path texturesToLoad[] = {
-		std::filesystem::path("assets") / "doom.jpg",
-		std::filesystem::path("assets") / "textures" / "brickwall.png",
-		std::filesystem::path("assets") / "textures" / "grass.png",
-	};
-
-	for (const auto& meshPath : meshesToLoad)
-	{
-		Mesh* mesh = g_AssetManager.LoadMesh(meshPath);
-		g_Meshes.push_back(mesh);
-	}
-
-	for (const auto& texturePath : texturesToLoad)
-	{
-		Texture* texture = g_AssetManager.LoadTexture(texturePath);
-		g_Textures.push_back(texture);
-	}
+	// meshes
+	g_Meshes.push_back(g_AssetManager.LoadMesh(std::filesystem::path("assets") / "cube.glb"));
+	g_Meshes.push_back(g_AssetManager.LoadMesh(std::filesystem::path("assets") / "diorama.glb"));
 
 	g_LoadingState.loadTarget = g_Meshes.size() + g_Textures.size();
 
-	s_BoundTexture = g_Textures[0]; // doom
+	// Entities
+	g_Entities.emplace_back("Cube", g_Meshes[0], Transform{ glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)}, false);
+	g_Entities.emplace_back("Diorama", g_Meshes[1], Transform{ glm::vec3(0.0f, -6.4f, 0.0f), glm::vec3(270.0f, 210.0f, 0.0f), glm::vec3(1.0f) }, true);
+
+	// scene settings
+	s_BoundTexture = g_Textures[1];
 
 	s_UniBuffLighting.ambient = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
 	s_UniBuffLighting.sunPos = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 	s_UniBuffLighting.sunColor = glm::vec4(1.0f);
 	s_UniBuffLighting.viewPos = glm::vec4(1.0f);
 
+	// cleanup
 	g_RendererContext.QueueShutdownFunc([]() {
 		for (auto mesh : g_Meshes)
 		{
-			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), mesh->GetVertexBuffer());
-			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), mesh->GetIndexBuffer());
+			g_ResourceFactory.DestroyMesh(mesh);
 			delete mesh;
 		}
+		
 		for (auto texture : g_Textures)
 		{
-			VkUtils::DestroyImage(g_RendererContext.GetDevice(), texture->GetImage());
-			delete texture;
+			g_ResourceFactory.DestroyTexture(texture);
+
+			if(texture != &s_DefaultTexture)
+				delete texture;
 		}
 	});
 }
@@ -898,26 +911,11 @@ void ImGuii()
 
 	ImVec4 lblColor = g_LoadingState.currentlyLoaded == g_LoadingState.loadTarget ? ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
 	ImGui::TextColored(lblColor, "Scene loading: %d/%d", g_LoadingState.currentlyLoaded, g_LoadingState.loadTarget);
-	
-	if (ImGui::Button("Load scene async"))
-	{
-		std::filesystem::path meshPath = std::filesystem::path("assets") / "car.glb";
-		for (u32 i = 0; i < 16; i++)
-		{
-			Mesh* meshRes = g_AssetManager.LoadMesh(meshPath);
-			g_Meshes.push_back(meshRes);
-		}
-
-		g_LoadingState.loadTarget += 16;
-	}
 
 	ImGui::Separator();
 
-	if (ImGui::BeginCombo("Texture", s_BoundTexture ? s_BoundTexture->DebugName.c_str() : "Nulla :("))
+	if (ImGui::BeginCombo("Texture", s_BoundTexture->DebugName.c_str()))
 	{
-		if (ImGui::Selectable("Nulla :(", s_BoundTexture == nullptr))
-			s_BoundTexture = nullptr;
-
 		for (Texture* texture : g_Textures)
 		{
 			if (ImGui::Selectable(texture->DebugName.c_str(), texture == s_BoundTexture))
@@ -943,8 +941,18 @@ void ImGuii()
 	ImGui::Separator();
 
 	ImGui::ColorEdit4("Lighting - Ambient", glm::value_ptr(s_UniBuffLighting.ambient));
+
+	if(s_LightPosUpdate)
+		ImGui::BeginDisabled();
+	
 	ImGui::DragFloat3("Lighting - Sun pos (directional light src)", glm::value_ptr(s_UniBuffLighting.sunPos));
+	
+	if (s_LightPosUpdate) 
+		ImGui::EndDisabled();
+
 	ImGui::ColorEdit3("Lighting - Sun color (directional light color)", glm::value_ptr(s_UniBuffLighting.sunColor));
+
+	ImGui::Checkbox("Lighting - auto move", &s_LightPosUpdate);
 
 	ImGui::Separator();
 
@@ -955,9 +963,24 @@ void ImGuii()
 
 	ImGui::Separator();
 
-	ImGui::DragFloat3("Model Location", glm::value_ptr(g_MeshTransform.position), 0.005f);
-	ImGui::DragFloat3("Model Rotation", glm::value_ptr(g_MeshTransform.rotation), 0.1f);
-	ImGui::DragFloat3("Model Scale", glm::value_ptr(g_MeshTransform.scale), 0.005f);
+	static u32 selectedEntityIndex = 1;
+	for (u32 i = 0; i < (u32)g_Entities.size(); i++)
+	{
+		SceneEntity& ent = g_Entities[i];
+
+		if (ImGui::Selectable(ent.debugName.c_str(), selectedEntityIndex == i))
+			selectedEntityIndex = i;
+	}
+
+	if (selectedEntityIndex >= 0 && selectedEntityIndex < g_Entities.size())
+	{
+		SceneEntity& ent = g_Entities[selectedEntityIndex];
+
+		ImGui::DragFloat3("Model Location", glm::value_ptr(ent.transform.position), 0.005f);
+		ImGui::DragFloat3("Model Rotation", glm::value_ptr(ent.transform.rotation), 0.1f);
+		ImGui::DragFloat3("Model Scale", glm::value_ptr(ent.transform.scale), 0.005f);
+		ImGui::Checkbox("Visible", &ent.visible);
+	}
 
 	ImGui::Separator();
 
@@ -979,6 +1002,10 @@ void Update(float deltaTime)
 		u32 loadedAssets = g_AssetManager.CheckLoadedAssets();
 		g_LoadingState.currentlyLoaded += loadedAssets;
 	}
+
+	// light pos
+	if(s_LightPosUpdate)
+		s_UniBuffLighting.sunPos.y = sin(g_Time) * 10.0f;
 
 	// camera rotation
 	ImVec2 mousePos = ImGui::GetMousePos();
@@ -1141,29 +1168,31 @@ void NewFrame()
 			renderInfo.pStencilAttachment = nullptr;
 			vkCmdBeginRendering(cmd, &renderInfo);
 
-			bool boundTextureAvail = s_BoundTexture && s_BoundTexture->IsLoaded();
-
-			if (boundTextureAvail)
+			if (s_BoundTexture->IsLoaded())
+			{
 				VkUtils::UpdateDescBinding(device, frameData.descriptorGBuffer, s_BoundTexture->GetImage().view, g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0);
 
-			Mesh* modelMesh = g_Meshes[1];
-			if (modelMesh->IsLoaded() && boundTextureAvail)
-			{
-				glm::mat4 modelRotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
-					* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
-					* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+				for (const SceneEntity& entity : g_Entities)
+				{
+					if (!entity.mesh->IsLoaded() || !entity.visible)
+						continue;
 
-				glm::mat4 model = glm::translate(g_MeshTransform.position) * modelRotation * glm::scale(g_MeshTransform.scale);
+					glm::mat4 modelRotation = glm::rotate(glm::radians(entity.transform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
+						* glm::rotate(glm::radians(entity.transform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
+						* glm::rotate(glm::radians(entity.transform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
 
-				MeshPushConstant meshPushConst;
-				meshPushConst.worldMatrix = proj * view * model;
-				meshPushConst.modelMatrix = model;
-				meshPushConst.vertexBuffer = modelMesh->GetVertexBufferAddress();
-				vkCmdPushConstants(cmd, g_GfxPipelineDeferred_GBuffer.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+					glm::mat4 model = glm::translate(entity.transform.position) * modelRotation * glm::scale(entity.transform.scale);
 
-				vkCmdBindIndexBuffer(cmd, modelMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-				for (const Submesh& submesh : modelMesh->GetSubmeshes())
-					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+					MeshPushConstant meshPushConst;
+					meshPushConst.worldMatrix = proj * view * model;
+					meshPushConst.modelMatrix = model;
+					meshPushConst.vertexBuffer = entity.mesh->GetVertexBufferAddress();
+					vkCmdPushConstants(cmd, g_GfxPipelineDeferred_GBuffer.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+					vkCmdBindIndexBuffer(cmd, entity.mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+					for (const Submesh& submesh : entity.mesh->GetSubmeshes())
+						vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+				}
 			}
 
 			vkCmdEndRendering(cmd);
@@ -1261,29 +1290,31 @@ void NewFrame()
 		renderInfo.pStencilAttachment = nullptr;
 		vkCmdBeginRendering(cmd, &renderInfo);
 
-		bool boundTextureAvail = s_BoundTexture && s_BoundTexture->IsLoaded();
-
-		if (boundTextureAvail)
+		if (s_BoundTexture->IsLoaded())
+		{
 			VkUtils::UpdateDescBinding(device, frameData.descriptorForward, s_BoundTexture->GetImage().view, g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0);
 
-		Mesh* modelMesh = g_Meshes[1];
-		if (modelMesh->IsLoaded() && boundTextureAvail)
-		{
-			glm::mat4 modelRotation = glm::rotate(glm::radians(g_MeshTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
-				* glm::rotate(glm::radians(g_MeshTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
-				* glm::rotate(glm::radians(g_MeshTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+			for (const SceneEntity& entity : g_Entities)
+			{
+				if (!entity.mesh->IsLoaded() || !entity.visible)
+					continue;
 
-			glm::mat4 model = glm::translate(g_MeshTransform.position) * modelRotation * glm::scale(g_MeshTransform.scale);
+				glm::mat4 modelRotation = glm::rotate(glm::radians(entity.transform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
+					* glm::rotate(glm::radians(entity.transform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
+					* glm::rotate(glm::radians(entity.transform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
 
-			MeshPushConstant meshPushConst;
-			meshPushConst.worldMatrix = proj * view * model;
-			meshPushConst.modelMatrix = model;
-			meshPushConst.vertexBuffer = modelMesh->GetVertexBufferAddress();
-			vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+				glm::mat4 model = glm::translate(entity.transform.position) * modelRotation * glm::scale(entity.transform.scale);
 
-			vkCmdBindIndexBuffer(cmd, modelMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-			for (const Submesh& submesh : modelMesh->GetSubmeshes())
-				vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+				MeshPushConstant meshPushConst;
+				meshPushConst.worldMatrix = proj * view * model;
+				meshPushConst.modelMatrix = model;
+				meshPushConst.vertexBuffer = entity.mesh->GetVertexBufferAddress();
+				vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+				vkCmdBindIndexBuffer(cmd, entity.mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+				for (const Submesh& submesh : entity.mesh->GetSubmeshes())
+					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+			}
 		}
 
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
@@ -1368,12 +1399,13 @@ int main()
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	g_Window = glfwCreateWindow(1400, 900, "Vulkan!!!", nullptr, nullptr);
 	CORE_ASSERT(g_Window, "Unable to spawn window!");
+	glfwSetWindowAttrib(g_Window, GLFW_RESIZABLE, 0);
 
 	InitVulkan();
 	InitImgui();
 	
 	g_ResourceFactory.Init(&g_RendererContext);
-	g_AssetManager.Init(4);
+	g_AssetManager.Init(2);
 	LoadGeometry();
 		
 	while (!glfwWindowShouldClose(g_Window))

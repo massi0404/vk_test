@@ -29,8 +29,8 @@ void main()
 
 	vec3 reflectedLightDir = reflect(meLookingAtSun * -1.0, inNormal);
 	vec3 meLookingAtEye = normalize(viewPos.xyz - inWorldPos);
-	float specularIntensity = pow(max(dot(meLookingAtEye, reflectedLightDir), 0.0), 128);
-	float specularStrength = 0.8;
+	float specularIntensity = pow(max(dot(meLookingAtEye, reflectedLightDir), 0.0), 32);
+	float specularStrength = 0.5;
 	vec4 specular = specularStrength * specularIntensity * sunColor;
 
 	outColor = baseFragColor * (localAmbient + diffuse + specular);
