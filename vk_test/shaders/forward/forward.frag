@@ -24,10 +24,10 @@ void main()
 
 	vec3 meLookingAtSun = normalize(sunPos.xyz - inWorldPos);
 
-	float diffuseIntensity = max(dot(inNormal, meLookingAtSun), 0.0);
+	float diffuseIntensity = max(dot(normalize(inNormal), meLookingAtSun), 0.0);
 	vec4 diffuse = diffuseIntensity * sunColor;
 
-	vec3 reflectedLightDir = reflect(meLookingAtSun * -1.0, inNormal);
+	vec3 reflectedLightDir = reflect(meLookingAtSun * -1.0, normalize(inNormal));
 	vec3 meLookingAtEye = normalize(viewPos.xyz - inWorldPos);
 	float specularIntensity = pow(max(dot(meLookingAtEye, reflectedLightDir), 0.0), 32);
 	float specularStrength = 0.5;
