@@ -9,7 +9,6 @@ void GraphicsPipelineBuilder::Clear()
 	m_ColorAttachments.clear();
 	m_Descriptors.clear();
 	m_PushConstants.clear();
-	m_ViewportSize = {};
 }
 
 MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device, VkPipelineLayout layout)
@@ -18,10 +17,15 @@ MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device, VkPipelineLayout la
 
 	std::vector<char> vertSpv = Utils::ReadFileBinary(m_VertexShader);
 	std::vector<char> fragSpv = Utils::ReadFileBinary(m_FragmentShader);
-	check(vertSpv.size() && fragSpv.size());
+	//check(vertSpv.size() && fragSpv.size());
 
-	VkShaderModule vertShaderModule = VkUtils::CreateShaderModule(device, vertSpv);
-	VkShaderModule fragShaderModule = VkUtils::CreateShaderModule(device, fragSpv);
+	VkShaderModule vertShaderModule = VK_NULL_HANDLE;
+	VkShaderModule fragShaderModule = VK_NULL_HANDLE;
+
+	if (vertSpv.size())
+		vertShaderModule = VkUtils::CreateShaderModule(device, vertSpv);
+	if(fragSpv.size())
+		fragShaderModule = VkUtils::CreateShaderModule(device, fragSpv);
 
 	VkPipelineShaderStageCreateInfo vertStageInfo = {};
 	vertStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -37,10 +41,13 @@ MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device, VkPipelineLayout la
 	fragStageInfo.pName = "main";
 	fragStageInfo.pSpecializationInfo = nullptr; // constants
 
-	std::array<VkPipelineShaderStageCreateInfo, 2> pipelineStages = {
-		vertStageInfo, // vertex shader 
-		fragStageInfo  // fragment shader
-	};
+	std::vector<VkPipelineShaderStageCreateInfo> pipelineStages;
+
+	if (vertShaderModule)
+		pipelineStages.push_back(vertStageInfo);
+
+	if (fragShaderModule)
+		pipelineStages.push_back(fragStageInfo);
 
 	/*	fixed states (fissi per tutta la pipeline):
 		- input assembly
@@ -64,7 +71,7 @@ MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device, VkPipelineLayout la
 	rasterizerState.rasterizerDiscardEnable = VK_FALSE; // se VK_TRUE la geometry non va oltre -> non c'e' output sul framebuffer...
 	rasterizerState.polygonMode = VK_POLYGON_MODE_FILL;
 	rasterizerState.lineWidth = 1.0f; // per le linee... spessore in fragaments... > 1 richiede GPU feature (wideLines)
-	rasterizerState.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizerState.cullMode = m_CullMode;
 	rasterizerState.frontFace = VK_FRONT_FACE_CLOCKWISE;
 	rasterizerState.depthBiasEnable = VK_FALSE; // offsetta il valore depth in base ai seguenti parametri...
 	rasterizerState.depthBiasConstantFactor = 0.0f; // Optional
@@ -154,18 +161,6 @@ MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device, VkPipelineLayout la
 	dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 	dynamicStateInfo.dynamicStateCount = (uint32_t)dynamicStates.size();
 	dynamicStateInfo.pDynamicStates = dynamicStates.data();
-
-	VkViewport viewport = {};
-	viewport.x = 0.0f;
-	viewport.y = (float)m_ViewportSize.height;
-	viewport.width = (float)m_ViewportSize.width;
-	viewport.height = -(float)m_ViewportSize.height;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-
-	VkRect2D scissor = {};
-	scissor.offset = { 0, 0 };
-	scissor.extent = m_ViewportSize;
 
 	VkPipelineViewportStateCreateInfo viewportState = {};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;

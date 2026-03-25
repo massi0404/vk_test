@@ -81,6 +81,8 @@ VkUtils::Image g_GBuffer_Entity;
 VkUtils::Image g_GBuffer_Positions;
 
 VkUtils::Image g_CompositeFinal;
+VkUtils::Image g_ShadowMap;
+u32 shadowMapRes = 1024;
 
 // misc
 VkCommandPool g_ImmediateCommandPool = VK_NULL_HANDLE;
@@ -104,8 +106,10 @@ MyVkPipeline g_ComputePipeline;
 
 MyVkPipeline g_GfxPipelineDeferred_GBuffer;
 MyVkPipeline g_GfxPipelineDeferred_Compose;
+
 MyVkPipeline g_GfxPipelineForward;
 MyVkPipeline g_GfxPipelineForward_Simple;
+MyVkPipeline g_GfxPipelineForward_Shadows;
 
 // push constants
 struct PushConstant0
@@ -129,6 +133,13 @@ struct MeshPushConstant // todo: gia oltre i 128 bytes per le push constant lol
 	VkDeviceAddress vertexBuffer;
 };
 
+struct PushConstantShadow
+{
+	glm::mat4 lightView;
+	VkDeviceAddress vertexBuffer;
+	u64 padding;
+};
+
 struct Transform
 {
 	glm::vec3 position = { 0.0f, 0.0f, 0.0f };
@@ -143,6 +154,7 @@ float g_FrameTime = 0.0f; // seconds
 
 struct UniBuffLighting
 {
+	glm::mat4 lightView;
 	glm::vec4 ambient;
 	glm::vec4 sunPos; // directional light source
 	glm::vec4 sunColor;
@@ -330,12 +342,8 @@ void CreatePipeline()
 
 	// compute pipeline
 	{
-		VkPushConstantRange computePushConstant0;
-		computePushConstant0.size = sizeof(PushConstant0);
-		computePushConstant0.offset = 0;
-		computePushConstant0.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+		VkPushConstantRange computePushConstant0 = VkUtils::PushConstantRange<PushConstant0, VK_SHADER_STAGE_COMPUTE_BIT>();
 
-		//ComputePipelineBuilder& computeBuilder = s_PipelineTemplates_Compute.emplace_back();
 		ComputePipelineBuilder computeBuilder;
 		computeBuilder.m_ComputeShader = "shaders/bin/comp.spv";
 		computeBuilder.m_Descriptors = { g_ComputeDSLayout };
@@ -344,19 +352,15 @@ void CreatePipeline()
 		//g_ComputePipeline = computeBuilder.Build(device);
 	}
 
+	VkPushConstantRange gfxMeshPushConstant = VkUtils::PushConstantRange<MeshPushConstant, VK_SHADER_STAGE_VERTEX_BIT>();
+
 	// graphics pipeline gbuffer
-	{
-		VkPushConstantRange meshPushConst;
-		meshPushConst.size = sizeof(MeshPushConstant);
-		meshPushConst.offset = 0;
-		meshPushConst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-			
+	{			
 		GraphicsPipelineBuilder graphicsBuilder;
 		graphicsBuilder.m_VertexShader = "shaders/bin/vert_gbuffer.spv";
 		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_gbuffer.spv";
 		graphicsBuilder.m_ColorAttachments = { GBUFFER_ALBEDO_FORMAT, GBUFFER_NORMALS_FORMAT, GBUFFER_ENTITY_FORMAT, GBUFFER_POSITIONS_FORMAT };
-		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
-		graphicsBuilder.m_PushConstants = { meshPushConst };
+		graphicsBuilder.m_PushConstants = { gfxMeshPushConstant };
 		graphicsBuilder.m_Descriptors = { g_Gfx_GBuffer_DSLayout };
 		//graphicsBuilder.m_BlendMode = EGraphicsBlendMode::GFX_BLEND_ADDITIVE;
 		/*
@@ -364,7 +368,7 @@ void CreatePipeline()
 			As mentioned, because 0 is far and 1 is near,
 			we will want to only render the pixels if the current depth value is greater than the depth value on the depth image.
 		*/
-		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_GREATER_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
+		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_LESS_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
 
 		g_GfxPipelineDeferred_GBuffer = graphicsBuilder.Build(device, g_GfxPipelineDeferred_GBuffer.layout);
 	}
@@ -375,7 +379,6 @@ void CreatePipeline()
 		graphicsBuilder.m_VertexShader = "shaders/bin/vert_composite.spv";
 		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_composite.spv";
 		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
-		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
 		graphicsBuilder.m_Descriptors = { g_Gfx_Compose_DSLayout };
 
 		g_GfxPipelineDeferred_Compose = graphicsBuilder.Build(device, g_GfxPipelineDeferred_Compose.layout);
@@ -383,19 +386,13 @@ void CreatePipeline()
 
 	// graphics pipeline forward
 	{
-		VkPushConstantRange meshPushConst;
-		meshPushConst.size = sizeof(MeshPushConstant);
-		meshPushConst.offset = 0;
-		meshPushConst.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
 		GraphicsPipelineBuilder graphicsBuilder;
 		graphicsBuilder.m_VertexShader = "shaders/bin/vert_forward.spv";
 		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_forward.spv";
 		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
-		graphicsBuilder.m_ViewportSize = g_SwapchainExtent;
-		graphicsBuilder.m_PushConstants = { meshPushConst };
+		graphicsBuilder.m_PushConstants = { gfxMeshPushConstant };
 		graphicsBuilder.m_Descriptors = { g_Gfx_Forward_DSLayout };
-		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_GREATER_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
+		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_LESS_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
 
 		g_GfxPipelineForward = graphicsBuilder.Build(device, g_GfxPipelineForward.layout);
 
@@ -403,6 +400,17 @@ void CreatePipeline()
 		//graphicsBuilder.m_DepthMode.reset();
 
 		g_GfxPipelineForward_Simple = graphicsBuilder.Build(device, g_GfxPipelineForward.layout);
+	}
+
+	// graphics pipeline forward - shadows
+	{
+		GraphicsPipelineBuilder graphicsBuilder;
+		graphicsBuilder.m_VertexShader = "shaders/bin/vert_forward_shadow.spv";
+		graphicsBuilder.m_PushConstants = { VkUtils::PushConstantRange<PushConstantShadow, VK_SHADER_STAGE_VERTEX_BIT>() };
+		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_LESS_OR_EQUAL, VK_FORMAT_D32_SFLOAT, true };
+		//graphicsBuilder.m_CullMode = VK_CULL_MODE_FRONT_BIT;
+
+		g_GfxPipelineForward_Shadows = graphicsBuilder.Build(device, g_GfxPipelineForward_Shadows.layout);
 	}
 }
 
@@ -541,6 +549,15 @@ void CreateRenderImage()
 	compositeFinalAttachment.format = DRAW_FORMAT;
 	g_CompositeFinal = VkUtils::CreateImage(device, compositeFinalAttachment);
 
+	VkUtils::ImageDesc shadowMapAttachment = {};
+	shadowMapAttachment.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	shadowMapAttachment.aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+	shadowMapAttachment.width = shadowMapRes;
+	shadowMapAttachment.height = shadowMapRes;
+	shadowMapAttachment.tiling = VK_IMAGE_TILING_OPTIMAL;
+	shadowMapAttachment.format = GBUFFER_DEPTH_FORMAT;
+	g_ShadowMap = VkUtils::CreateImage(device, shadowMapAttachment);
+
 	g_RendererContext.QueueShutdownFunc([device]() {
 		VkUtils::DestroyImage(device, g_GBuffer_Albedo);
 		VkUtils::DestroyImage(device, g_GBuffer_Normals);
@@ -548,6 +565,7 @@ void CreateRenderImage()
 		VkUtils::DestroyImage(device, g_GBuffer_Positions);
 		VkUtils::DestroyImage(device, g_GBuffer_Depth);
 		VkUtils::DestroyImage(device, g_CompositeFinal);
+		VkUtils::DestroyImage(device, g_ShadowMap);
 	});
 }
 
@@ -557,7 +575,7 @@ void CreateDescriptors()
 
 	VkDescriptorPoolSize poolSizes[] = {
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 },
 		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 12 }
 	};
 
@@ -612,6 +630,7 @@ void CreateDescriptors()
 		VkUtils::DescSetBinding bindings[] = {
 			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },	// texture
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },			// lighting
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 }    // depth map
 		};
 
 		g_Gfx_Forward_DSLayout = VkUtils::CreateDescSetLayout(device, bindings);
@@ -668,6 +687,7 @@ void CreateDescriptors()
 
 		VkUtils::UpdateDescBinding(device, composeSet, uniBuffLighting.buffer, sizeof(UniBuffLighting), 4);
 		VkUtils::UpdateDescBinding(device, forwardSet, uniBuffLighting.buffer, sizeof(UniBuffLighting), 1);
+		VkUtils::UpdateDescBinding(device, forwardSet, g_ShadowMap.view, g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 2);
 
 		g_FramesData[i].descriptorGBuffer = gbufferSet;
 		g_FramesData[i].descriptorCompose = composeSet;
@@ -791,8 +811,8 @@ struct SceneEntity
 
 static std::vector<SceneEntity> g_Entities;
 
-static glm::vec3 s_CamPos = { 0.0f, 0.0f, -25.0f };
-static glm::vec3 s_CamRot = { 0.0f, 0.0f, 0.0f };
+static glm::vec3 s_CamPos = { -33.9f, 15.3f, -32.8f };
+static glm::vec3 s_CamRot = { 18.9f, 39.1f, 0.0f };
 static float s_CamSpeed = 10.0f;
 static float s_CamFOV = 60.0f;
 static ImVec2 s_MousePos = {};
@@ -801,7 +821,8 @@ static float s_MouseSens = 0.1f;
 static UniBuffLighting s_UniBuffLighting = {};
 static Texture* s_BoundTexture = nullptr;
 
-static bool s_LightPosUpdate = true;
+static glm::vec3 s_LightRotation;
+static bool s_LightPosUpdate = false;
 
 static Texture s_DefaultTexture;
 
@@ -831,14 +852,15 @@ void LoadGeometry()
 	g_LoadingState.loadTarget = g_Meshes.size() + g_Textures.size();
 
 	// Entities
-	g_Entities.emplace_back("Cube", g_Meshes[0], Transform{ glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f)}, false);
-	g_Entities.emplace_back("Diorama", g_Meshes[1], Transform{ glm::vec3(0.0f, -6.4f, 0.0f), glm::vec3(270.0f, 210.0f, 0.0f), glm::vec3(1.0f) }, true);
+	g_Entities.emplace_back("Floor", g_Meshes[0], Transform{ glm::vec3(-40.0f, -19.1f, 14.5f), glm::vec3(0.0f), glm::vec3(10.0f, 1.0f, 10.0f) }, true);
+	g_Entities.emplace_back("Cube", g_Meshes[0], Transform{ glm::vec3(-5.4f, -9.2f, 21.7f), glm::vec3(0.0f, 26.0f, 0.0f), glm::vec3(1.0f, 1.0f, 1.0f)}, true);
+	g_Entities.emplace_back("Diorama", g_Meshes[1], Transform{ glm::vec3(-2.0f, 0.0f, 50.0f), glm::vec3(270.0f, 263.0f, 0.0f), glm::vec3(1.0f) }, true);
 
 	// scene settings
-	s_BoundTexture = g_Textures[1];
+	s_BoundTexture = g_Textures[0];
 
 	s_UniBuffLighting.ambient = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
-	s_UniBuffLighting.sunPos = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+	s_UniBuffLighting.sunPos = glm::vec4(0.0f, 5.0f, 0.0f, 1.0f);
 	s_UniBuffLighting.sunColor = glm::vec4(1.0f);
 	s_UniBuffLighting.viewPos = glm::vec4(1.0f);
 
@@ -880,6 +902,9 @@ void InitVulkan()
 
 	VkDevice device = g_RendererContext.GetDevice();
 	g_RendererContext.QueueShutdownFunc([device]() {
+		vkDestroyPipeline(device, g_GfxPipelineForward_Shadows.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineForward_Shadows.layout, nullptr);
+
 		vkDestroyPipeline(device, g_GfxPipelineForward.pipeline, nullptr);
 		vkDestroyPipeline(device, g_GfxPipelineForward_Simple .pipeline, nullptr);
 		vkDestroyPipelineLayout(device, g_GfxPipelineForward.layout, nullptr);
@@ -950,6 +975,8 @@ void ImGuii()
 	if (s_LightPosUpdate) 
 		ImGui::EndDisabled();
 
+	ImGui::DragFloat3("Lighting - Light rotation", glm::value_ptr(s_LightRotation));
+
 	ImGui::ColorEdit3("Lighting - Sun color (directional light color)", glm::value_ptr(s_UniBuffLighting.sunColor));
 
 	ImGui::Checkbox("Lighting - auto move", &s_LightPosUpdate);
@@ -991,6 +1018,11 @@ void ImGuii()
 
 	ImGui::Checkbox("Deferred (broken)", &s_Deferred);
 
+	static VkDescriptorSet boh = 0;
+	if(!boh)
+		boh = ImGui_ImplVulkan_AddTexture(g_TextureSamplerBasic, g_ShadowMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	ImGui::Image(boh, { 300, 300 });
+
 	ImGui::End();
 }
 
@@ -1025,6 +1057,8 @@ void Update(float deltaTime)
 	s_MousePos = mousePos;
 
 	// camera location
+	float camSpeed = 5.0f;
+
 	glm::vec3 inputMovement = { 0.0f, 0.0f, 0.0f };
 
 	if (ImGui::IsKeyDown(ImGuiKey_W))
@@ -1049,17 +1083,47 @@ void Update(float deltaTime)
 		glm::vec3 finalMovement = forward * inputMovement.z + right * inputMovement.x + up * inputMovement.y;
 		finalMovement = glm::normalize(finalMovement) * (s_CamSpeed * deltaTime);
 		
-		s_CamPos = s_CamPos + finalMovement;
+		s_CamPos = s_CamPos + finalMovement * camSpeed;
 	}
 
 	if (ImGui::IsKeyDown(ImGuiKey_R))
 		s_CamPos = glm::vec3(0.0f);
 }
 
+static glm::mat4 ModelMatrix(const Transform& t)
+{
+	glm::mat4 rotation = glm::rotate(glm::radians(t.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
+						* glm::rotate(glm::radians(t.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
+						* glm::rotate(glm::radians(t.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+
+	glm::mat4 translation = glm::translate(t.position);
+
+	glm::mat4 scale = glm::scale(t.scale);
+
+	return translation * rotation * scale;
+}
+
+static glm::mat4 ViewMatrix(glm::vec3 camPosition, glm::vec3 camRotationDegrees)
+{
+	glm::vec3 camRotRadians = glm::radians(camRotationDegrees);
+
+	glm::vec3 camForward = Math::Forward(camRotRadians);
+	glm::vec3 camRight = Math::Right(camRotRadians);
+	glm::vec3 camUp = glm::cross(camForward, camRight);
+	
+	return glm::lookAtLH(camPosition, camForward + camPosition, camUp);
+}
+
+static glm::mat4 PerspectiveMatrix(float fovDegrees, float width, float height, float nearZ, float farZ)
+{
+	return glm::perspectiveFovLH_ZO(glm::radians(fovDegrees), width, height, nearZ, farZ);
+}
+
 void NewFrame()
 {
 	VkDevice device = g_RendererContext.GetDevice();
 
+	//LOG_WARN("New frame!");
 	if (s_PipelinesAreDirty)
 	{
 		system("if 1==1 \"shaders/compile.bat\""); // a quanto pare aspetta finche non ha finito, gg
@@ -1070,13 +1134,12 @@ void NewFrame()
 		vkDestroyPipeline(device, g_GfxPipelineDeferred_Compose.pipeline, nullptr);
 		vkDestroyPipeline(device, g_GfxPipelineForward.pipeline, nullptr);
 		vkDestroyPipeline(device, g_GfxPipelineForward_Simple.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineForward_Shadows.pipeline, nullptr);
 		
 		CreatePipeline();
 
 		s_PipelinesAreDirty = false;
 	}
-
-	//LOG_WARN("New frame!");
 
 	FrameData& frameData = g_FramesData[g_FrameIndex];
 
@@ -1094,6 +1157,9 @@ void NewFrame()
 		.presentSemaphore = g_SwapchainSemaphores[imageIndex]
 	};
 
+	if (s_BoundTexture->IsLoaded())
+		VkUtils::UpdateDescBinding(device, frameData.descriptorForward, s_BoundTexture->GetImage().view, g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0);
+
 	VkCommandBuffer cmd = frameData.commandBuffer;
 	vkCheck(vkResetCommandBuffer(cmd, 0));
 
@@ -1103,36 +1169,12 @@ void NewFrame()
 	cmdBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkCheck(vkBeginCommandBuffer(cmd, &cmdBufferBeginInfo));
 
-	VkViewport viewport = {};
-	viewport.x = 0;
-	viewport.y = (float)g_SwapchainExtent.height;
-	viewport.width = (float)g_SwapchainExtent.width;
-	viewport.height = -(float)g_SwapchainExtent.height;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-	vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-	VkRect2D scissor = {};
-	scissor.offset.x = 0;
-	scissor.offset.y = 0;
-	scissor.extent.width = g_SwapchainExtent.width;
-	scissor.extent.height = g_SwapchainExtent.height;
-	vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-	glm::vec3 camRotRadians = glm::radians(s_CamRot);
-
-	glm::vec3 camForward = Math::Forward(camRotRadians);
-	glm::vec3 camRight = Math::Right(camRotRadians);
-	glm::vec3 camUp = glm::cross(camForward, camRight);
-
-	glm::mat4 view = glm::lookAtLH(s_CamPos, camForward + s_CamPos, camUp);
-	view = view * glm::rotate(camRotRadians.z, glm::vec3(0.0f, 0.0f, 1.0f));
-
-	glm::mat4 proj = glm::perspectiveFovLH_ZO(glm::radians(s_CamFOV), (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 10000.f, 0.1f);
-
 	if (s_Deferred)
 	{
-		VkImage images[] = { g_GBuffer_Albedo.image, g_GBuffer_Normals.image, g_GBuffer_Entity.image, g_GBuffer_Positions.image };
+#if 0
+		VkUtils::TransitionImageHandle images[] = {
+			g_GBuffer_Albedo.image, g_GBuffer_Normals.image, g_GBuffer_Entity.image, g_GBuffer_Positions.image 
+		};
 
 		// Pipeline gbuffers
 		{
@@ -1254,88 +1296,140 @@ void NewFrame()
 
 			vkCmdEndRendering(cmd);
 		}
-
+#endif
 	}
 	else
 	{
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.pipeline);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.layout, 0, 1, &frameData.descriptorForward, 0, nullptr);
+		glm::mat4 lightView = ViewMatrix(glm::vec3(s_UniBuffLighting.sunPos), s_LightRotation);
+		glm::mat4 lightProj = glm::orthoLH_ZO(-30.0f, 30.0f, -30.0f, 30.0f, .1f, 150.0f);
 
-		s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
+		lightProj = PerspectiveMatrix(60.0f, shadowMapRes, shadowMapRes, .5f, 150.0);
+
+		s_UniBuffLighting.lightView = lightProj * lightView;
 		vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
 
-		VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Undefined, VkUtils::ImageLayout::Clear, g_CompositeFinal.image);
-		VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Clear, VkUtils::ImageLayout::RenderTarget, g_CompositeFinal.image);
-
-		// render
-		VkClearValue clear;
-		clear.color.float32[0] = 0.2f;
-		clear.color.float32[1] = 0.4f;
-		clear.color.float32[2] = 0.6f;
-		clear.color.float32[3] = 1.0f;
-
-		VkRenderingAttachmentInfo colorAttachementsInfo[] = {
-			VkUtils::AttachmentInfo(g_CompositeFinal.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-		};
-
-		VkRenderingAttachmentInfo depthAttachmentInfo = VkUtils::AttachmentInfoDepth(g_GBuffer_Depth.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-
-		VkRenderingInfo renderInfo = {};
-		renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-		renderInfo.renderArea = VkRect2D{ VkOffset2D { 0, 0 }, g_SwapchainExtent };
-		renderInfo.layerCount = 1;
-		renderInfo.colorAttachmentCount = (u32)std::size(colorAttachementsInfo);
-		renderInfo.pColorAttachments = colorAttachementsInfo;
-		renderInfo.pDepthAttachment = &depthAttachmentInfo;
-		renderInfo.pStencilAttachment = nullptr;
-		vkCmdBeginRendering(cmd, &renderInfo);
-
-		if (s_BoundTexture->IsLoaded())
+		// shadow map
 		{
-			VkUtils::UpdateDescBinding(device, frameData.descriptorForward, s_BoundTexture->GetImage().view, g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0);
+			VkUtils::SetViewportAndScissor(cmd, shadowMapRes, shadowMapRes);
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Shadows.pipeline);
+
+			VkRenderingAttachmentInfo depthAttachmentInfo = VkUtils::AttachmentInfoDepth(g_ShadowMap.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+			VkUtils::TransitionImageHandle imgDepth = { g_ShadowMap.image, true };
+			VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Undefined, VkUtils::ImageLayout::Clear, imgDepth);
+			VkUtils::TransitionImage(cmd, VkUtils::ImageLayout::Clear, VkUtils::ImageLayout::DepthTarget, imgDepth);
+
+			VkRenderingInfo renderInfo = {};
+			renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+			renderInfo.renderArea = VkRect2D{ VkOffset2D { 0, 0 }, { shadowMapRes, shadowMapRes } };
+			renderInfo.layerCount = 1;
+			renderInfo.pDepthAttachment = &depthAttachmentInfo;
+			renderInfo.pStencilAttachment = nullptr;
+			vkCmdBeginRendering(cmd, &renderInfo);
 
 			for (const SceneEntity& entity : g_Entities)
 			{
 				if (!entity.mesh->IsLoaded() || !entity.visible)
 					continue;
 
-				glm::mat4 modelRotation = glm::rotate(glm::radians(entity.transform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f))
-					* glm::rotate(glm::radians(entity.transform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f))
-					* glm::rotate(glm::radians(entity.transform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+				glm::mat4 model = ModelMatrix(entity.transform);
 
-				glm::mat4 model = glm::translate(entity.transform.position) * modelRotation * glm::scale(entity.transform.scale);
-
-				MeshPushConstant meshPushConst;
-				meshPushConst.worldMatrix = proj * view * model;
-				meshPushConst.modelMatrix = model;
-				meshPushConst.vertexBuffer = entity.mesh->GetVertexBufferAddress();
-				vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+				PushConstantShadow shadowShaderData;
+				shadowShaderData.lightView = lightProj * lightView * model;
+				shadowShaderData.vertexBuffer = entity.mesh->GetVertexBufferAddress();
+				vkCmdPushConstants(cmd, g_GfxPipelineForward_Shadows.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstantShadow), &shadowShaderData);
 
 				vkCmdBindIndexBuffer(cmd, entity.mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
 				for (const Submesh& submesh : entity.mesh->GetSubmeshes())
 					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
 			}
-		}
 
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
-		
-		Mesh* debugLightMesh = g_Meshes[0];
-		if (debugLightMesh->IsLoaded())
+			vkCmdEndRendering(cmd);
+		}
+		// normal scene
 		{
-			glm::mat4 model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
+			VkUtils::SetViewportAndScissor(cmd, g_SwapchainExtent.width, g_SwapchainExtent.height);
 
-			MeshPushConstant meshPushConst;
-			meshPushConst.worldMatrix = proj * view * model;
-			meshPushConst.modelMatrix = model;
-			meshPushConst.vertexBuffer = debugLightMesh->GetVertexBufferAddress();
-			vkCmdPushConstants(cmd, g_GfxPipelineForward_Simple.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.pipeline);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.layout, 0, 1, &frameData.descriptorForward, 0, nullptr);
 
-			vkCmdBindIndexBuffer(cmd, debugLightMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-			for (const Submesh& submesh : debugLightMesh->GetSubmeshes())
-				vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+			s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
+
+			VkUtils::TransitionImageHandle images[] = { { g_CompositeFinal.image, false }, { g_GBuffer_Depth.image, true} };
+			VkUtils::TransitionImages(cmd, VkUtils::Undefined, VkUtils::Clear, images);
+
+			VkUtils::TransitionImage(cmd, VkUtils::Clear, VkUtils::RenderTarget, images[0]);
+			VkUtils::TransitionImage(cmd, VkUtils::Clear, VkUtils::DepthTarget, images[1]);
+
+			VkUtils::TransitionImage(cmd, VkUtils::DepthTarget, VkUtils::SampleRead, { g_ShadowMap.image, true });
+
+			// render
+			VkClearValue clear;
+			clear.color.float32[0] = 0.2f;
+			clear.color.float32[1] = 0.4f;
+			clear.color.float32[2] = 0.6f;
+			clear.color.float32[3] = 1.0f;
+
+			VkRenderingAttachmentInfo colorAttachementsInfo[] = {
+				VkUtils::AttachmentInfo(g_CompositeFinal.view, &clear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+			};
+
+			VkRenderingAttachmentInfo depthAttachmentInfo = VkUtils::AttachmentInfoDepth(g_GBuffer_Depth.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+			VkRenderingInfo renderInfo = {};
+			renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+			renderInfo.renderArea = VkRect2D{ VkOffset2D { 0, 0 }, g_SwapchainExtent };
+			renderInfo.layerCount = 1;
+			renderInfo.colorAttachmentCount = (u32)std::size(colorAttachementsInfo);
+			renderInfo.pColorAttachments = colorAttachementsInfo;
+			renderInfo.pDepthAttachment = &depthAttachmentInfo;
+			renderInfo.pStencilAttachment = nullptr;
+			vkCmdBeginRendering(cmd, &renderInfo);
+
+			glm::mat4 camView = ViewMatrix(s_CamPos, s_CamRot);
+			glm::mat4 projection = PerspectiveMatrix(s_CamFOV, (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 0.1f, 1000.0f);
+
+			if (s_BoundTexture->IsLoaded())
+			{
+				for (const SceneEntity& entity : g_Entities)
+				{
+					if (!entity.mesh->IsLoaded() || !entity.visible)
+						continue;
+
+					glm::mat4 model = ModelMatrix(entity.transform);
+
+					MeshPushConstant meshPushConst;
+					meshPushConst.worldMatrix = projection * camView * model;
+					meshPushConst.modelMatrix = model;
+					meshPushConst.vertexBuffer = entity.mesh->GetVertexBufferAddress();
+					vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+					vkCmdBindIndexBuffer(cmd, entity.mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+					for (const Submesh& submesh : entity.mesh->GetSubmeshes())
+						vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+				}
+			}
+
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
+
+			Mesh* debugLightMesh = g_Meshes[0];
+			if (debugLightMesh->IsLoaded())
+			{
+				glm::mat4 model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
+
+				MeshPushConstant meshPushConst;
+				meshPushConst.worldMatrix = projection * camView * model;
+				meshPushConst.modelMatrix = model;
+				meshPushConst.vertexBuffer = debugLightMesh->GetVertexBufferAddress();
+				vkCmdPushConstants(cmd, g_GfxPipelineForward_Simple.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+				vkCmdBindIndexBuffer(cmd, debugLightMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+				for (const Submesh& submesh : debugLightMesh->GetSubmeshes())
+					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+			}
+
+			vkCmdEndRendering(cmd);
 		}
-
-		vkCmdEndRendering(cmd);
 	}
 
 	// prepare for copying to swapchain
@@ -1385,7 +1479,7 @@ void NewFrame()
 	presentInfo.pWaitSemaphores = &swapchainImage.presentSemaphore;
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pImageIndices = &imageIndex;
-	vkCheck(vkQueuePresentKHR(gfxQueue, &presentInfo));
+	vkCheck(vkQueuePresentKHR(gfxQueue, &presentInfo)); 
 
 	g_FrameIndex = (g_FrameIndex + 1) % FRAMES_IN_FLIGHT;
 }
@@ -1397,7 +1491,7 @@ int main()
 	CORE_ASSERT(glfwInit() == GLFW_TRUE, "Unable to init glfw!");
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	g_Window = glfwCreateWindow(1400, 900, "Vulkan!!!", nullptr, nullptr);
+	g_Window = glfwCreateWindow(1800, 1080, "Vulkan!!!", nullptr, nullptr);
 	CORE_ASSERT(g_Window, "Unable to spawn window!");
 	glfwSetWindowAttrib(g_Window, GLFW_RESIZABLE, 0);
 

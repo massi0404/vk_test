@@ -312,7 +312,7 @@ namespace VkUtils {
         depthAttachment.imageLayout = layout;
         depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        depthAttachment.clearValue.depthStencil.depth = 0.0f; // noi usiamo 0 far e 1 near (glm::perspective con near e far swappate)
+        depthAttachment.clearValue.depthStencil.depth = 1.0f; // noi usiamo 0 far e 1 near (glm::perspective con near e far swappate)
         
         return depthAttachment;
     }
@@ -443,13 +443,15 @@ namespace VkUtils {
     {
         switch (layout)
         {
-            case Undefined:     return {};
-            case Clear:         return { VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT };
-            case RenderTarget:  return { VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT };
-            case SampleRead:    return { VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
-            case TransferSrc:   return { VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT };
-            case TransferDst:   return { VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT };
-            case Present:       return { VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT };
+            case Undefined:         return {};
+            case Clear:             return { VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT };
+            case RenderTarget:      return { VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT };
+            case DepthTarget:       return { VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT };
+            case SampleRead:        return { VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
+            case SampleReadDepth:   return { VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT };
+            case TransferSrc:       return { VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT };
+            case TransferDst:       return { VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT };
+            case Present:           return { VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT };
         }
 
         check(0);
@@ -460,20 +462,22 @@ namespace VkUtils {
     {
         switch (layout)
         {
-            case Undefined:     return VK_IMAGE_LAYOUT_UNDEFINED;
-            case Clear:         return VK_IMAGE_LAYOUT_GENERAL;
-            case RenderTarget:  return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            case SampleRead:    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            case TransferSrc:   return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            case TransferDst:   return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            case Present:       return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            case Undefined:         return VK_IMAGE_LAYOUT_UNDEFINED;
+            case Clear:             return VK_IMAGE_LAYOUT_GENERAL;
+            case RenderTarget:      return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            case DepthTarget:       return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            case SampleRead:        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            case SampleReadDepth:   return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            case TransferSrc:       return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            case TransferDst:       return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            case Present:           return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         }
 
         check(0);
         return VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
-    void TransitionImages(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TBufferView<VkImage> images)
+    void TransitionImages(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TBufferView<TransitionImageHandle> images)
     {
         constexpr u32 MAX_BARRIERS = 16;
         static thread_local VkImageMemoryBarrier2 barriers[MAX_BARRIERS];
@@ -485,7 +489,8 @@ namespace VkUtils {
         VkImageLayout nativeSrcLayout = GetVkImageNativeLayout(from);
         VkImageLayout nativeDstLayout = GetVkImageNativeLayout(to);
 
-        VkImageSubresourceRange subimageRange = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+        VkImageSubresourceRange subImageColor = VkUtils::ImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+        VkImageSubresourceRange subImageDepth = VkUtils::ImageRange(VK_IMAGE_ASPECT_DEPTH_BIT);
 
         for (u32 i = 0; i < images.Count; i++)
         {
@@ -495,8 +500,8 @@ namespace VkUtils {
                 .dstStageMask = dstStage, .dstAccessMask = dstAccess,
                 .oldLayout = nativeSrcLayout,
                 .newLayout = nativeDstLayout,
-                .image = images[i],
-                .subresourceRange = subimageRange
+                .image = images[i].image,
+                .subresourceRange = images[i].depth ? subImageDepth : subImageColor
             };
         }
 
@@ -507,9 +512,28 @@ namespace VkUtils {
         vkCmdPipelineBarrier2(cmd, &depInfo);
     }
 
-    void TransitionImage(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, VkImage image)
+    void TransitionImage(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TransitionImageHandle image)
     {
-        VkImage images[] = {image};
+        TransitionImageHandle images[] = {image};
         TransitionImages(cmd, from, to, images);
+    }
+
+    void SetViewportAndScissor(VkCommandBuffer cmd, float width, float height)
+    {
+        VkViewport viewport = {};
+        viewport.x = 0;
+        viewport.y = (float)height;
+        viewport.width = (float)width;
+        viewport.height = -(float)height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+        VkRect2D scissor = {};
+        scissor.offset.x = 0;
+        scissor.offset.y = 0;
+        scissor.extent.width = width;
+        scissor.extent.height = height;
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
     }
 }

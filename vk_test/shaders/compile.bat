@@ -10,4 +10,6 @@ pushd %~dp0
 %VK_SDK_PATH%/Bin/glslc.exe forward/forward.frag -o bin/frag_forward.spv
 %VK_SDK_PATH%/Bin/glslc.exe forward/forward_simple.frag -o bin/frag_forward_simple.spv
 
+%VK_SDK_PATH%/Bin/glslc.exe forward/forward_shadow.vert -o bin/vert_forward_shadow.spv
+
 %VK_SDK_PATH%/Bin/glslc.exe shader.comp -o bin/comp.spv

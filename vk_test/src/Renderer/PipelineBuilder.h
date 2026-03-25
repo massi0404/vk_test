@@ -18,6 +18,13 @@ enum EGraphicsBlendMode
 	GFX_BLEND_ALPHABLEND
 };
 
+enum EGraphicsCullMode
+{
+	GFX_CULL_NONE,
+	GFX_CULL_BACK,
+	GFX_CULL_FRONT
+};
+
 struct GraphicsDepthMode
 {
 	VkCompareOp compareOp;
@@ -40,9 +47,9 @@ public:
 	std::vector<VkFormat> m_ColorAttachments;
 	std::vector<VkDescriptorSetLayout> m_Descriptors;
 	std::vector<VkPushConstantRange> m_PushConstants;
-	VkExtent2D m_ViewportSize = {};
 	EGraphicsBlendMode m_BlendMode = GFX_BLEND_NONE;
 	std::optional<GraphicsDepthMode> m_DepthMode;
+	VkCullModeFlagBits m_CullMode = VK_CULL_MODE_BACK_BIT;
 };
 
 class ComputePipelineBuilder

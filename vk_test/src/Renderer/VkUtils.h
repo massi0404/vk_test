@@ -99,12 +99,43 @@ namespace VkUtils {
 		Undefined,
 		Clear, // general layout for clearing
 		RenderTarget, // color attachment optimal
+		DepthTarget,
 		SampleRead, // shader read optimal
+		SampleReadDepth,
 		TransferSrc,
 		TransferDst,
 		Present
 	};
+
+	struct TransitionImageHandle
+	{
+		VkImage image;
+		bool depth;
+
+		TransitionImageHandle()
+			: image(VK_NULL_HANDLE), depth(false)
+		{
+		}
+
+		TransitionImageHandle(VkImage img)
+			: image(img), depth(false) 
+		{
+		}
+
+		TransitionImageHandle(VkImage img, bool isDepth)
+			: image(img), depth(isDepth)
+		{
+		}
+	};
 	
-	void TransitionImages(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TBufferView<VkImage> images);
-	void TransitionImage(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, VkImage image);
+	void TransitionImages(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TBufferView<TransitionImageHandle> images);
+	void TransitionImage(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TransitionImageHandle image);
+
+	void SetViewportAndScissor(VkCommandBuffer cmd, float width, float height);
+
+	template<typename T, VkShaderStageFlags stages>
+	constexpr VkPushConstantRange PushConstantRange()
+	{
+		return { stages, 0, sizeof(T) };
+	}
 }

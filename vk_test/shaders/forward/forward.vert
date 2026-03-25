@@ -4,6 +4,7 @@
 layout(location = 0) out vec2 outTexCoords;
 layout(location = 1) out vec3 outNormal;
 layout(location = 2) out vec3 outWorldPos;
+layout(location = 3) out vec4 outShadowView;
 
 struct Vertex {
 	vec3 position;
@@ -25,6 +26,15 @@ layout( push_constant ) uniform constants
 	VertexBuffer vertexBuffer;
 } PushConstants;
 
+layout (binding = 1) uniform SceneLighting
+{
+	mat4 shadowView;
+	vec4 ambient;
+	vec4 sunPos;
+	vec4 sunColor;
+	vec4 viewPos;
+};
+
 void main() 
 {	
 	//load vertex data from device address
@@ -35,8 +45,9 @@ void main()
 
 	outTexCoords = vec2(v.uv_x, v.uv_y);
 	
-	//outNormal = (PushConstants.model_matrix * vec4(v.normal, 1.0f)).xyz;
 	outNormal = mat3(transpose(inverse(PushConstants.model_matrix))) * v.normal; // normal matrix
 
 	outWorldPos = (PushConstants.model_matrix * vec4(v.position, 1.0f)).xyz;
+	
+	outShadowView = shadowView * vec4(outWorldPos, 1.0f);
 }
