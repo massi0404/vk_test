@@ -86,7 +86,7 @@ void ResourceFactory::Init(RendererContext* context)
                 }
             }
 
-            LOG_INFO("GPU Loader: %d in the queue, starting a batch of %d", m_PendingLoading.size(), loadBatch.size());
+            //LOG_INFO("GPU Loader: %d in the queue, starting a batch of %d", m_PendingLoading.size(), loadBatch.size());
             m_PendingLoading.erase(m_PendingLoading.begin(), m_PendingLoading.begin() + loadBatch.size());
             lock.unlock();
 
@@ -172,6 +172,24 @@ void ResourceFactory::CreateMesh(Mesh* mesh)
     mesh->m_VertexBufferAddress = vkGetBufferDeviceAddress(m_Device, &deviceAdressInfo);
 }
 
+void ResourceFactory::CreateSkeletalMesh(SkeletalMesh* skeletalMesh)
+{
+    // crea index buffer & vertex buffer
+    u32 renderQueue = m_Context->GetRendererDevice().GetGraphicsQueueFamilyIndex();
+
+    skeletalMesh->m_VertexBuffer = VkUtils::CreateBuffer(m_Device, skeletalMesh->GetVertexBufferSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_StagingQueue.familyIndex, renderQueue);
+
+    skeletalMesh->m_IndexBuffer = VkUtils::CreateBuffer(m_Device, skeletalMesh->GetIndexBufferSize(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_StagingQueue.familyIndex, renderQueue);
+
+    // prendi il puntatore al vertex buffer
+    VkBufferDeviceAddressInfo deviceAdressInfo = {};
+    deviceAdressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    deviceAdressInfo.buffer = skeletalMesh->m_VertexBuffer.buffer;
+    skeletalMesh->m_VertexBufferAddress = vkGetBufferDeviceAddress(m_Device, &deviceAdressInfo);
+}
+
 void ResourceFactory::DestroyMesh(Mesh* mesh)
 {
     VkUtils::DestroyBuffer(m_Device, mesh->m_VertexBuffer);
@@ -186,6 +204,16 @@ void ResourceFactory::DestroyTexture(Texture* texture)
 {
     VkUtils::DestroyImage(m_Device, texture->m_Image);
     texture->m_Image = {};
+}
+
+void ResourceFactory::DestroySkeletalMesh(SkeletalMesh* skeletalMesh)
+{
+    VkUtils::DestroyBuffer(m_Device, skeletalMesh->m_VertexBuffer);
+    VkUtils::DestroyBuffer(m_Device, skeletalMesh->m_IndexBuffer);
+
+    skeletalMesh->m_VertexBuffer = {};
+    skeletalMesh->m_IndexBuffer = {};
+    skeletalMesh->m_VertexBufferAddress = 0;
 }
 
 void ResourceFactory::PushLoading(const PendingLoadingRes& res)
@@ -302,6 +330,24 @@ void ResourceFactory::LoadPendingResources_LoaderThread(const std::vector<Pendin
             Mesh* mesh = res.mesh;
             memcpy((void*)((u64)(m_MappedStagingBuffer) + stagingMemoryOffset), mesh->m_Vertices.data(), mesh->GetVertexBufferSize());
             memcpy((void*)((u64)(m_MappedStagingBuffer) + stagingMemoryOffset + mesh->GetVertexBufferSize()), mesh->m_Indices.data(), mesh->GetIndexBufferSize());
+
+            VkBufferCopy vertexBufferCopy;
+            vertexBufferCopy.srcOffset = stagingMemoryOffset;
+            vertexBufferCopy.dstOffset = 0;
+            vertexBufferCopy.size = mesh->GetVertexBufferSize();
+            vkCmdCopyBuffer(m_StagingCmd, m_StagingBuffer.buffer, mesh->m_VertexBuffer.buffer, 1, &vertexBufferCopy);
+
+            VkBufferCopy indexBufferCopy;
+            indexBufferCopy.srcOffset = stagingMemoryOffset + mesh->GetVertexBufferSize();
+            indexBufferCopy.dstOffset = 0;
+            indexBufferCopy.size = mesh->GetIndexBufferSize();
+            vkCmdCopyBuffer(m_StagingCmd, m_StagingBuffer.buffer, mesh->m_IndexBuffer.buffer, 1, &indexBufferCopy);
+        }
+        else if (res.type == EResourceType::SkeletalMeshBuffers)
+        {
+            SkeletalMesh* mesh = res.skeletalMesh;
+            memcpy((void*)((u64)(m_MappedStagingBuffer)+stagingMemoryOffset), mesh->m_Vertices.data(), mesh->GetVertexBufferSize());
+            memcpy((void*)((u64)(m_MappedStagingBuffer)+stagingMemoryOffset + mesh->GetVertexBufferSize()), mesh->m_Indices.data(), mesh->GetIndexBufferSize());
 
             VkBufferCopy vertexBufferCopy;
             vertexBufferCopy.srcOffset = stagingMemoryOffset;

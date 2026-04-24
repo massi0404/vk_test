@@ -69,7 +69,7 @@ MyVkPipeline GraphicsPipelineBuilder::Build(VkDevice device, VkPipelineLayout la
 	rasterizerState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	rasterizerState.depthClampEnable = VK_FALSE; // se VK_TRUE invece che ignorare i vertici oltre far & near li clampa, richiede gpu freature
 	rasterizerState.rasterizerDiscardEnable = VK_FALSE; // se VK_TRUE la geometry non va oltre -> non c'e' output sul framebuffer...
-	rasterizerState.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizerState.polygonMode = m_PolyMode;
 	rasterizerState.lineWidth = 1.0f; // per le linee... spessore in fragaments... > 1 richiede GPU feature (wideLines)
 	rasterizerState.cullMode = m_CullMode;
 	rasterizerState.frontFace = VK_FRONT_FACE_CLOCKWISE;

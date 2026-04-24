@@ -42,6 +42,8 @@ public:
 	inline const VkUtils::Image& GetImage() const { return m_Image; }
 	inline bool IsLoaded() const { return m_IsLoaded; }
 
+	inline u32 GetImageIndex() const { return m_ImageIndex; }
+
 public:
 	std::string DebugName;
 
@@ -52,6 +54,7 @@ private:
 	std::vector<u8> m_Data;
 	VkUtils::Image m_Image;
 	TextureDesc m_Desc;
+	u32 m_ImageIndex = 0;
 
 	bool m_IsLoaded = false;
 

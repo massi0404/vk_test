@@ -23,7 +23,7 @@ Mesh* AssetManager::LoadMesh(const std::filesystem::path& path)
 		// disk -> ram
 		mesh->Load(path);
 		mesh->CreateOnGPU();
-		LOG_INFO("Asset manager: Mesh %s loaded on ram! (%.2f MB)", path.string().c_str(), Utils::BytesToMegabytes(mesh->GetMemoryFootprint()));
+		//LOG_INFO("Asset manager: Mesh %s loaded on ram! (%.2f MB)", path.string().c_str(), Utils::BytesToMegabytes(mesh->GetMemoryFootprint()));
 		// ram -> vram
 		PendingLoadingRes res;
 		res.mesh = mesh;
@@ -36,6 +36,27 @@ Mesh* AssetManager::LoadMesh(const std::filesystem::path& path)
 	return mesh;
 }
 
+SkeletalMesh* AssetManager::LoadSkeletalMesh(const std::filesystem::path& path)
+{
+	SkeletalMesh* skMesh = new SkeletalMesh(); // todo: decent allocator
+
+	m_AsyncLoader.AddTask([skMesh, path]() {
+		// disk -> ram
+		skMesh->Load(path);
+		skMesh->CreateOnGPU();
+		//LOG_INFO("Asset manager: SkeletalMesh %s loaded on ram! (%.2f MB)", path.string().c_str(), Utils::BytesToMegabytes(mesh->GetMemoryFootprint()));
+		// ram -> vram
+		PendingLoadingRes res;
+		res.skeletalMesh = skMesh;
+		res.size = skMesh->GetMemoryFootprint();
+		res.type = EResourceType::SkeletalMeshBuffers;
+		g_ResourceFactory.PushLoading(res);
+	});
+
+	RegisterAsset(skMesh, EAssetType::Mesh);
+	return skMesh;
+}
+
 Texture* AssetManager::LoadTexture(const std::filesystem::path& path)
 {
 	Texture* texture = new Texture(); // todo: decent allocator
@@ -44,7 +65,7 @@ Texture* AssetManager::LoadTexture(const std::filesystem::path& path)
 		// disk -> ram
 		texture->Load(path);
 		texture->CreateOnGPU();
-		LOG_INFO("Asset manager: Texture %s loaded on ram! (%.2f MB)", path.string().c_str(), Utils::BytesToMegabytes(texture->GetMemoryFootprint()));
+		//LOG_INFO("Asset manager: Texture %s loaded on ram! (%.2f MB)", path.string().c_str(), Utils::BytesToMegabytes(texture->GetMemoryFootprint()));
 		// ram -> vram
 		PendingLoadingRes res;
 		res.texture = texture;
@@ -53,11 +74,13 @@ Texture* AssetManager::LoadTexture(const std::filesystem::path& path)
 		g_ResourceFactory.PushLoading(res);
 	});
 
+	texture->m_ImageIndex = GenNewTextureIndex();
 	RegisterAsset(texture, EAssetType::Texture);
+
 	return texture;
 }
 
-u32 AssetManager::CheckLoadedAssets()
+u32 AssetManager::CheckLoadedAssets(std::vector<PendingLoadingRes>& outLoadedAssets)
 {
 	std::vector<PendingLoadingRes> loaded;
 	u32 freshlyLoadedCount = g_ResourceFactory.PullLoaded(loaded);
@@ -77,10 +100,31 @@ u32 AssetManager::CheckLoadedAssets()
 			if (!res.mesh->KeepCPUData)
 				res.mesh->ClearData();
 			break;
+
+		case EResourceType::SkeletalMeshBuffers:
+			res.skeletalMesh->m_IsLoaded = true;
+			if (!res.skeletalMesh->KeepCPUData)
+				res.skeletalMesh->ClearData();
+			break;
 		}
 	}
 
+	outLoadedAssets = std::move(loaded);
 	return freshlyLoadedCount;
+}
+
+u32 AssetManager::CheckLoadedAssets()
+{
+	std::vector<PendingLoadingRes> dummyAssets;
+	return CheckLoadedAssets(dummyAssets);
+}
+
+void AssetManager::AssignTextureIndex(Texture* texture)
+{
+	check(texture);
+	check(texture->m_ImageIndex == 0);
+
+	texture->m_ImageIndex = GenNewTextureIndex();
 }
 
 AssetUUID AssetManager::RegisterAsset(void* assetRes, EAssetType type)

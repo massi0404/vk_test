@@ -141,21 +141,29 @@ void RendererDevice::Init(VkInstance instance, VkSurfaceKHR surface)
 
 	VkPhysicalDeviceVulkan13Features deviceFeatures_13 = {};
 	deviceFeatures_13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-	deviceFeatures_13.dynamicRendering = true;
-	deviceFeatures_13.synchronization2 = true;
+	deviceFeatures_13.dynamicRendering = VK_TRUE;
+	deviceFeatures_13.synchronization2 = VK_TRUE;
 
 	VkPhysicalDeviceVulkan12Features deviceFeatures_12 = {};
 	deviceFeatures_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	deviceFeatures_12.pNext = &deviceFeatures_13;
-	deviceFeatures_12.bufferDeviceAddress = true;
-	deviceFeatures_12.descriptorIndexing = true;
+	deviceFeatures_12.bufferDeviceAddress = VK_TRUE;
+	deviceFeatures_12.descriptorIndexing = VK_TRUE;
+	deviceFeatures_12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+	deviceFeatures_12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+	deviceFeatures_12.descriptorBindingPartiallyBound = VK_TRUE;
+	deviceFeatures_12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+	deviceFeatures_12.runtimeDescriptorArray = VK_TRUE;
+
+	VkPhysicalDeviceFeatures deviceFeatures_10 = {};
+	deviceFeatures_10.fillModeNonSolid = VK_TRUE;
 
 	VkDeviceCreateInfo deviceCreateInfo = {};
 	deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	deviceCreateInfo.pNext = &deviceFeatures_12; // because of pNext
 	deviceCreateInfo.pQueueCreateInfos = queueInfos.data();
 	deviceCreateInfo.queueCreateInfoCount = (uint32_t)queueInfos.size();
-	deviceCreateInfo.pEnabledFeatures = nullptr; // because of pNext
+	deviceCreateInfo.pEnabledFeatures = &deviceFeatures_10; // because of pNext
 	deviceCreateInfo.enabledExtensionCount = (uint32_t)requiredGpuExtensions.size();
 	deviceCreateInfo.ppEnabledExtensionNames = requiredGpuExtensions.data();
 

@@ -76,13 +76,14 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;$(ProjectDir)vendor\assimp\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies)assimp-vc143-mtd.lib;</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -93,13 +94,14 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;$(ProjectDir)vendor\assimp\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies)assimp-vc143-mt.lib;</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -108,14 +110,14 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;$(ProjectDir)vendor\assimp\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)assimp-vc143-mtd.lib;zlibstaticd.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(ProjectDir)libs;C:\VulkanSDK\1.4.313.1\Lib;</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -125,7 +127,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%VK_SDK_PATH%\Include;$(ProjectDir)vendor;$(ProjectDir)src;$(ProjectDir)vendor\fastgltf\include;$(ProjectDir)vendor\assimp\include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <ConformanceMode>true</ConformanceMode>
@@ -133,7 +135,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)assimp-vc143-mt.lib;zlibstatic.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(ProjectDir)libs;C:\VulkanSDK\1.4.313.1\Lib;</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -141,9 +143,11 @@
     <ClCompile Include="src\AssetManager.cpp" />
     <ClCompile Include="src\Core\Debug.cpp" />
     <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="src\Renderer\Animation.cpp" />
     <ClCompile Include="src\Renderer\PipelineBuilder.cpp" />
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="src\Renderer\RendererContext.cpp" />
+    <ClCompile Include="src\Renderer\SkeletalMesh.cpp" />
     <ClCompile Include="src\Renderer\Texture.cpp" />
     <ClCompile Include="src\Renderer\Mesh.cpp" />
     <ClCompile Include="src\Renderer\ResourceFactory.cpp" />
@@ -175,9 +179,11 @@
     <ClInclude Include="src\Misc\Timer.h" />
     <ClInclude Include="src\Math\Math.h" />
     <ClInclude Include="src\Misc\DeletionQueue.h" />
+    <ClInclude Include="src\Renderer\Animation.h" />
     <ClInclude Include="src\Renderer\PipelineBuilder.h" />
     <ClInclude Include="src\Engine.h" />
     <ClInclude Include="src\Renderer\RendererContext.h" />
+    <ClInclude Include="src\Renderer\SkeletalMesh.h" />
     <ClInclude Include="src\Renderer\Texture.h" />
     <ClInclude Include="src\Renderer\Mesh.h" />
     <ClInclude Include="src\Renderer\ResourceFactory.h" />

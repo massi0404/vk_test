@@ -50,6 +50,7 @@ public:
 	EGraphicsBlendMode m_BlendMode = GFX_BLEND_NONE;
 	std::optional<GraphicsDepthMode> m_DepthMode;
 	VkCullModeFlagBits m_CullMode = VK_CULL_MODE_BACK_BIT;
+	VkPolygonMode m_PolyMode = VK_POLYGON_MODE_FILL;
 };
 
 class ComputePipelineBuilder

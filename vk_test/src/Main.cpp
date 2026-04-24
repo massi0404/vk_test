@@ -15,6 +15,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/transform.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include "imgui/imgui.h"
 #include "imgui/backends/imgui_impl_glfw.h"
@@ -101,6 +102,10 @@ VkDescriptorSetLayout g_Gfx_Forward_DSLayout = VK_NULL_HANDLE;
 VkDescriptorSetLayout g_ComputeDSLayout = VK_NULL_HANDLE;
 VkDescriptorSet g_ComputeDS = VK_NULL_HANDLE;
 
+VkDescriptorPool g_DescriptorPoolBindless = VK_NULL_HANDLE;
+VkDescriptorSetLayout g_BindlessDSLayout = VK_NULL_HANDLE;
+VkDescriptorSet g_BindlessDS = VK_NULL_HANDLE;
+
 // compute & graphics pipelines
 MyVkPipeline g_ComputePipeline;
 
@@ -110,6 +115,9 @@ MyVkPipeline g_GfxPipelineDeferred_Compose;
 MyVkPipeline g_GfxPipelineForward;
 MyVkPipeline g_GfxPipelineForward_Simple;
 MyVkPipeline g_GfxPipelineForward_Shadows;
+MyVkPipeline g_GfxPipelineForward_Shadows_Sk;
+MyVkPipeline g_GfxPipelineForward_Wireframe;
+MyVkPipeline g_GfxPipelineForward_Sk;
 
 // push constants
 struct PushConstant0
@@ -133,11 +141,19 @@ struct MeshPushConstant // todo: gia oltre i 128 bytes per le push constant lol
 	VkDeviceAddress vertexBuffer;
 };
 
+struct SkMeshPushConstant
+{
+	glm::mat4 worldMatrix;
+	glm::mat4 modelMatrix;
+	VkDeviceAddress vertexBuffer;
+	VkDeviceAddress animBuffer;
+};
+
 struct PushConstantShadow
 {
 	glm::mat4 lightView;
 	VkDeviceAddress vertexBuffer;
-	u64 padding;
+	VkDeviceAddress animBuffer;
 };
 
 struct Transform
@@ -159,6 +175,9 @@ struct UniBuffLighting
 	glm::vec4 sunPos; // directional light source
 	glm::vec4 sunColor;
 	glm::vec4 viewPos;
+	u32 textureIndex;
+	u32 shadowPassEnabled;
+	u32 pad[2];
 };
 
 void CreateSwapchain()
@@ -342,7 +361,7 @@ void CreatePipeline()
 
 	// compute pipeline
 	{
-		VkPushConstantRange computePushConstant0 = VkUtils::PushConstantRange<PushConstant0, VK_SHADER_STAGE_COMPUTE_BIT>();
+		VkPushConstantRange computePushConstant0 = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstant0) };
 
 		ComputePipelineBuilder computeBuilder;
 		computeBuilder.m_ComputeShader = "shaders/bin/comp.spv";
@@ -352,7 +371,8 @@ void CreatePipeline()
 		//g_ComputePipeline = computeBuilder.Build(device);
 	}
 
-	VkPushConstantRange gfxMeshPushConstant = VkUtils::PushConstantRange<MeshPushConstant, VK_SHADER_STAGE_VERTEX_BIT>();
+	VkPushConstantRange gfxMeshPushConstant = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant) };
+	VkPushConstantRange gfxSkMeshPushConstant = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SkMeshPushConstant) };
 
 	// graphics pipeline gbuffer
 	{			
@@ -391,26 +411,51 @@ void CreatePipeline()
 		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_forward.spv";
 		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
 		graphicsBuilder.m_PushConstants = { gfxMeshPushConstant };
-		graphicsBuilder.m_Descriptors = { g_Gfx_Forward_DSLayout };
+		graphicsBuilder.m_Descriptors = { g_Gfx_Forward_DSLayout, g_BindlessDSLayout };
 		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_LESS_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
 
 		g_GfxPipelineForward = graphicsBuilder.Build(device, g_GfxPipelineForward.layout);
 
-		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_forward_simple.spv";
-		//graphicsBuilder.m_DepthMode.reset();
-
-		g_GfxPipelineForward_Simple = graphicsBuilder.Build(device, g_GfxPipelineForward.layout);
+		// wireframe
+		graphicsBuilder.m_PolyMode = VK_POLYGON_MODE_LINE;
+		g_GfxPipelineForward_Wireframe = graphicsBuilder.Build(device, g_GfxPipelineForward.layout);
+		graphicsBuilder.m_PolyMode = VK_POLYGON_MODE_FILL;
+		
+		// shadow map
+		graphicsBuilder.m_FragmentShader.clear();
+		graphicsBuilder.m_ColorAttachments.clear();
+		g_GfxPipelineForward_Shadows = graphicsBuilder.Build(device, g_GfxPipelineForward_Shadows.layout);
 	}
 
-	// graphics pipeline forward - shadows
+	// graphics pipeline forward - simple
 	{
 		GraphicsPipelineBuilder graphicsBuilder;
-		graphicsBuilder.m_VertexShader = "shaders/bin/vert_forward_shadow.spv";
-		graphicsBuilder.m_PushConstants = { VkUtils::PushConstantRange<PushConstantShadow, VK_SHADER_STAGE_VERTEX_BIT>() };
-		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_LESS_OR_EQUAL, VK_FORMAT_D32_SFLOAT, true };
-		//graphicsBuilder.m_CullMode = VK_CULL_MODE_FRONT_BIT;
+		graphicsBuilder.m_VertexShader = "shaders/bin/vert_forward.spv";
+		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_forward_simple.spv";
+		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
+		graphicsBuilder.m_PushConstants = { gfxMeshPushConstant };
+		graphicsBuilder.m_Descriptors = { g_Gfx_Forward_DSLayout };
+		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_LESS_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
 
-		g_GfxPipelineForward_Shadows = graphicsBuilder.Build(device, g_GfxPipelineForward_Shadows.layout);
+		g_GfxPipelineForward_Simple = graphicsBuilder.Build(device, g_GfxPipelineForward_Simple.layout);
+	}
+
+	// graphics pipeline forward - skeletal mesh
+	{
+		GraphicsPipelineBuilder graphicsBuilder;
+		graphicsBuilder.m_VertexShader = "shaders/bin/vert_forward_sk.spv";
+		graphicsBuilder.m_FragmentShader = "shaders/bin/frag_forward.spv";
+		graphicsBuilder.m_ColorAttachments = { DRAW_FORMAT };
+		graphicsBuilder.m_PushConstants = { gfxSkMeshPushConstant };
+		graphicsBuilder.m_Descriptors = { g_Gfx_Forward_DSLayout, g_BindlessDSLayout };
+		graphicsBuilder.m_DepthMode = { VK_COMPARE_OP_LESS_OR_EQUAL, GBUFFER_DEPTH_FORMAT, true };
+
+		g_GfxPipelineForward_Sk = graphicsBuilder.Build(device, g_GfxPipelineForward_Sk.layout);
+
+		// shadow map
+		graphicsBuilder.m_FragmentShader.clear();
+		graphicsBuilder.m_ColorAttachments.clear();
+		g_GfxPipelineForward_Shadows_Sk = graphicsBuilder.Build(device, g_GfxPipelineForward_Shadows_Sk.layout);
 	}
 }
 
@@ -630,7 +675,7 @@ void CreateDescriptors()
 		VkUtils::DescSetBinding bindings[] = {
 			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },	// texture
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },			// lighting
-			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 }    // depth map
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },   // depth map
 		};
 
 		g_Gfx_Forward_DSLayout = VkUtils::CreateDescSetLayout(device, bindings);
@@ -707,6 +752,63 @@ void CreateDescriptors()
 
 		for (FrameData& frameData : g_FramesData)
 			VkUtils::DestroyBuffer(device, frameData.uniformBufferLighting);
+	});
+}
+
+void CreateDescriptorsBindless()
+{
+	VkDevice device = g_RendererContext.GetDevice();
+
+	constexpr u32 MAX_TEXTURES = 128;
+
+	VkDescriptorPoolSize poolSizes[] = {
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES }
+	};
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; // concurrently update single items whenevere the hell you want (when not used by shaders)
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = (u32)std::size(poolSizes);
+	poolInfo.pPoolSizes = poolSizes;
+	vkCheck(vkCreateDescriptorPool(device, &poolInfo, nullptr, &g_DescriptorPoolBindless));
+
+	VkDescriptorSetLayoutBinding bindings[1] = {
+		{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = MAX_TEXTURES,
+			.stageFlags = VK_SHADER_STAGE_ALL
+		}
+	};
+
+	const VkDescriptorBindingFlagsEXT flags =
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+
+	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlags = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT };
+	bindingFlags.bindingCount = 1;
+	bindingFlags.pBindingFlags = &flags;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT;
+	layoutInfo.pNext = &bindingFlags;
+	layoutInfo.bindingCount = (u32)std::size(bindings);
+	layoutInfo.pBindings = bindings;
+	 
+	vkCheck(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &g_BindlessDSLayout));
+
+	VkDescriptorSetAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+	allocInfo.descriptorPool = g_DescriptorPoolBindless;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &g_BindlessDSLayout;
+
+	vkCheck(vkAllocateDescriptorSets(device, &allocInfo, &g_BindlessDS));
+
+	g_RendererContext.QueueShutdownFunc([device]() {
+		vkDestroyDescriptorPool(device, g_DescriptorPoolBindless, nullptr);
+		vkDestroyDescriptorSetLayout(device, g_BindlessDSLayout, nullptr);
 	});
 }
 
@@ -799,20 +901,25 @@ struct LoadingState
 LoadingState g_LoadingState;
 
 static std::vector<Mesh*> g_Meshes;
+static std::vector<SkeletalMesh*> g_SkeletalMeshes;
 static std::vector<Texture*> g_Textures;
 
 struct SceneEntity
 {
 	std::string debugName;
-	Mesh* mesh;
+
+	Mesh* mesh = nullptr;
+	SkeletalMesh* skeletalMesh = nullptr;
+	
 	Transform transform;
 	bool visible;
 };
 
+
 static std::vector<SceneEntity> g_Entities;
 
-static glm::vec3 s_CamPos = { -33.9f, 15.3f, -32.8f };
-static glm::vec3 s_CamRot = { 18.9f, 39.1f, 0.0f };
+static glm::vec3 s_CamPos = { -56.3f, 148.6f, 210.3f };
+static glm::vec3 s_CamRot = { 13.7f, 168.8f, 0.0f };
 static float s_CamSpeed = 10.0f;
 static float s_CamFOV = 60.0f;
 static ImVec2 s_MousePos = {};
@@ -826,6 +933,9 @@ static bool s_LightPosUpdate = false;
 
 static Texture s_DefaultTexture;
 
+static std::pair<VkUtils::Buffer, VkDeviceAddress> s_AnimBuffers[FRAMES_IN_FLIGHT];
+static std::pair<VkUtils::Buffer, void*> s_AnimBuffersStaging[FRAMES_IN_FLIGHT];
+
 void LoadGeometry()
 {
 	// default assets
@@ -838,6 +948,7 @@ void LoadGeometry()
 		.size = s_DefaultTexture.GetMemoryFootprint(),
 		.type = EResourceType::Texture
 	});
+	g_AssetManager.AssignTextureIndex(&s_DefaultTexture);
 
 	// textures
 	g_Textures.push_back(&s_DefaultTexture);
@@ -849,23 +960,42 @@ void LoadGeometry()
 	g_Meshes.push_back(g_AssetManager.LoadMesh(std::filesystem::path("assets") / "cube.glb"));
 	g_Meshes.push_back(g_AssetManager.LoadMesh(std::filesystem::path("assets") / "diorama.glb"));
 
-	g_LoadingState.loadTarget = g_Meshes.size() + g_Textures.size();
+	// skeletal meshes
+	g_SkeletalMeshes.push_back(g_AssetManager.LoadSkeletalMesh(std::filesystem::path("assets") / "Punching.fbx"));
 
-	// Entities
-	g_Entities.emplace_back("Floor", g_Meshes[0], Transform{ glm::vec3(-40.0f, -19.1f, 14.5f), glm::vec3(0.0f), glm::vec3(10.0f, 1.0f, 10.0f) }, true);
-	g_Entities.emplace_back("Cube", g_Meshes[0], Transform{ glm::vec3(-5.4f, -9.2f, 21.7f), glm::vec3(0.0f, 26.0f, 0.0f), glm::vec3(1.0f, 1.0f, 1.0f)}, true);
-	g_Entities.emplace_back("Diorama", g_Meshes[1], Transform{ glm::vec3(-2.0f, 0.0f, 50.0f), glm::vec3(270.0f, 263.0f, 0.0f), glm::vec3(1.0f) }, true);
+	g_LoadingState.loadTarget = (u32)(g_Meshes.size() + g_Textures.size() + g_SkeletalMeshes.size());
+
+	// Scene entities
+	g_Entities.emplace_back("Floor", g_Meshes[0], nullptr, Transform{ glm::vec3(-40.0f, -19.1f, 14.5f), glm::vec3(0.0f), glm::vec3(10.0f, 1.0f, 10.0f) }, true);
+	g_Entities.emplace_back("Cube", g_Meshes[0], nullptr, Transform{ glm::vec3(-5.4f, -9.2f, 21.7f), glm::vec3(0.0f, 26.0f, 0.0f), glm::vec3(1.0f, 1.0f, 1.0f) }, true);
+	g_Entities.emplace_back("Diorama", g_Meshes[1], nullptr, Transform{ glm::vec3(-2.0f, 0.0f, 50.0f), glm::vec3(270.0f, 263.0f, 0.0f), glm::vec3(1.0f) }, true);
+	g_Entities.emplace_back("Punching", nullptr, g_SkeletalMeshes[0], Transform{ glm::vec3(0.0f), glm::vec3(0.0f, 180.0f, 0.0f), glm::vec3(1.0f) }, true);
 
 	// scene settings
 	s_BoundTexture = g_Textures[0];
 
 	s_UniBuffLighting.ambient = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
-	s_UniBuffLighting.sunPos = glm::vec4(0.0f, 5.0f, 0.0f, 1.0f);
+	s_UniBuffLighting.sunPos = glm::vec4(0.0f, 103.0f, 285.0f, 1.0f);
 	s_UniBuffLighting.sunColor = glm::vec4(1.0f);
 	s_UniBuffLighting.viewPos = glm::vec4(1.0f);
+	s_UniBuffLighting.shadowPassEnabled = 0;
 
 	// cleanup
 	g_RendererContext.QueueShutdownFunc([]() {
+
+		for (u32 i = 0; i < FRAMES_IN_FLIGHT; i++)
+		{
+			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), s_AnimBuffers[i].first);
+			vkUnmapMemory(g_RendererContext.GetDevice(), s_AnimBuffersStaging[i].first.memory);
+			VkUtils::DestroyBuffer(g_RendererContext.GetDevice(), s_AnimBuffersStaging[i].first);
+		}
+
+		for (auto skeletalMesh : g_SkeletalMeshes)
+		{
+			g_ResourceFactory.DestroySkeletalMesh(skeletalMesh);
+			delete skeletalMesh;
+		}
+
 		for (auto mesh : g_Meshes)
 		{
 			g_ResourceFactory.DestroyMesh(mesh);
@@ -896,17 +1026,28 @@ void InitVulkan()
 	CreateTextureSamplers();
 	
 	CreateDescriptors();
+	CreateDescriptorsBindless();
 
 	//CreateRenderPass(); dynamic_rendering yeee
 	CreatePipeline();
 
 	VkDevice device = g_RendererContext.GetDevice();
 	g_RendererContext.QueueShutdownFunc([device]() {
+		
+		vkDestroyPipeline(device, g_GfxPipelineForward_Shadows_Sk.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineForward_Shadows_Sk.layout, nullptr);
+
+		vkDestroyPipeline(device, g_GfxPipelineForward_Sk.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineForward_Sk.layout , nullptr);
+
 		vkDestroyPipeline(device, g_GfxPipelineForward_Shadows.pipeline, nullptr);
 		vkDestroyPipelineLayout(device, g_GfxPipelineForward_Shadows.layout, nullptr);
 
+		vkDestroyPipeline(device, g_GfxPipelineForward_Simple.pipeline, nullptr);
+		vkDestroyPipelineLayout(device, g_GfxPipelineForward_Simple.layout, nullptr);
+		
+		vkDestroyPipeline(device, g_GfxPipelineForward_Wireframe.pipeline, nullptr);
 		vkDestroyPipeline(device, g_GfxPipelineForward.pipeline, nullptr);
-		vkDestroyPipeline(device, g_GfxPipelineForward_Simple .pipeline, nullptr);
 		vkDestroyPipelineLayout(device, g_GfxPipelineForward.layout, nullptr);
 
 		vkDestroyPipeline(device, g_GfxPipelineDeferred_GBuffer.pipeline, nullptr);
@@ -929,6 +1070,7 @@ void ShutdownVulkan()
 
 static bool s_PipelinesAreDirty = false;
 static bool s_Deferred = false;
+static bool s_Wireframe = false;
 
 void ImGuii()
 {
@@ -953,12 +1095,12 @@ void ImGuii()
 	ImGui::Separator();
 
 	static float stableFrametime = g_FrameTime;
-	static float lastSample = g_Time;
+	static float lastSample = (float)g_Time;
 
 	if (g_Time - lastSample > 0.05f)
 	{
 		stableFrametime = g_FrameTime;
-		lastSample = g_Time;
+		lastSample = (float)g_Time;
 	}
 
 	ImGui::Text("Frametime: %.2fms (%.0f FPS)", stableFrametime * 1000.0f, 1.0f / stableFrametime);
@@ -981,6 +1123,12 @@ void ImGuii()
 
 	ImGui::Checkbox("Lighting - auto move", &s_LightPosUpdate);
 
+	static bool shadowPassEnabled = s_UniBuffLighting.shadowPassEnabled == 1;
+	ImGui::Checkbox("Shadows - enable shadow pass", &shadowPassEnabled);
+	s_UniBuffLighting.shadowPassEnabled = shadowPassEnabled ? 1 : 0;
+
+	ImGui::Checkbox("Wireframe", &s_Wireframe);
+
 	ImGui::Separator();
 
 	ImGui::DragFloat3("Cam Location", glm::value_ptr(s_CamPos), 0.005f);
@@ -990,7 +1138,7 @@ void ImGuii()
 
 	ImGui::Separator();
 
-	static u32 selectedEntityIndex = 1;
+	static u32 selectedEntityIndex = 3;
 	for (u32 i = 0; i < (u32)g_Entities.size(); i++)
 	{
 		SceneEntity& ent = g_Entities[i];
@@ -1018,12 +1166,33 @@ void ImGuii()
 
 	ImGui::Checkbox("Deferred (broken)", &s_Deferred);
 
-	static VkDescriptorSet boh = 0;
-	if(!boh)
-		boh = ImGui_ImplVulkan_AddTexture(g_TextureSamplerBasic, g_ShadowMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	ImGui::Image(boh, { 300, 300 });
+	if (shadowPassEnabled)
+	{
+		static VkDescriptorSet boh = ImGui_ImplVulkan_AddTexture(g_TextureSamplerBasic, g_ShadowMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		ImGui::Image(boh, { 300, 300 });
+	}
 
 	ImGui::End();
+}
+
+void UpdateAnimations()
+{
+	for (SkeletalMesh* skMesh : g_SkeletalMeshes)
+	{
+		if (!skMesh->IsLoaded())
+			continue;
+
+		Animation* anim = (Animation*)&skMesh->GetAnimations()[0];
+
+		float animDurationSeconds = anim->frameCount * (1.0f / anim->frameRate);
+		float howManyRolls = floor((float)g_Time / animDurationSeconds);
+		float rollsTime = howManyRolls * animDurationSeconds;
+		float currentAnimTime = (float)g_Time - rollsTime;
+
+		auto& [staging, mapped] = s_AnimBuffersStaging[g_FrameIndex];
+
+		Anim::GenAnimationFrame(anim, currentAnimTime, (glm::mat4*)mapped);
+	}
 }
 
 void Update(float deltaTime)
@@ -1031,13 +1200,53 @@ void Update(float deltaTime)
 	// asset straming
 	if (g_LoadingState.currentlyLoaded < g_LoadingState.loadTarget)
 	{
-		u32 loadedAssets = g_AssetManager.CheckLoadedAssets();
-		g_LoadingState.currentlyLoaded += loadedAssets;
+		std::vector<PendingLoadingRes> loadedAssets;
+		u32 loadedAssetsCount = g_AssetManager.CheckLoadedAssets(loadedAssets);
+
+		for (PendingLoadingRes& res : loadedAssets)
+		{
+			if (res.type == EResourceType::Texture)
+			{
+				// update bindless descriptor
+				u32 index = res.texture->GetImageIndex();
+
+				VkUtils::UpdateDescBinding(g_RendererContext.GetDevice(), g_BindlessDS, res.texture->GetImage().view,
+					g_TextureSamplerBasic, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, index);
+			}
+			else if (res.type == EResourceType::SkeletalMeshBuffers)
+			{
+				// alloc anim data
+				VkDevice gpu = g_RendererContext.GetDevice();
+				u32 bufferSize = sizeof(glm::mat4) * res.skeletalMesh->GetBoneCount();
+
+				for (u32 i = 0; i < FRAMES_IN_FLIGHT; i++)
+				{
+					auto& [finalBuffer, gpuAddress] = s_AnimBuffers[i];
+
+					finalBuffer = VkUtils::CreateBuffer(gpu, bufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+						VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+					VkBufferDeviceAddressInfo addressInfo = {};
+					addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+					addressInfo.buffer = finalBuffer.buffer;
+					gpuAddress = vkGetBufferDeviceAddress(gpu, &addressInfo);
+
+					auto& [stagingBuffer, mappedMem] = s_AnimBuffersStaging[i];
+
+					stagingBuffer = VkUtils::CreateBuffer(gpu, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+					vkCheck(vkMapMemory(gpu, stagingBuffer.memory, 0, bufferSize, 0, &mappedMem));
+				}
+			}
+		}
+
+		g_LoadingState.currentlyLoaded += loadedAssetsCount;
 	}
+
+	UpdateAnimations();
 
 	// light pos
 	if(s_LightPosUpdate)
-		s_UniBuffLighting.sunPos.y = sin(g_Time) * 10.0f;
+		s_UniBuffLighting.sunPos.y = (float)sin(g_Time) * 10.0f;
 
 	// camera rotation
 	ImVec2 mousePos = ImGui::GetMousePos();
@@ -1135,6 +1344,9 @@ void NewFrame()
 		vkDestroyPipeline(device, g_GfxPipelineForward.pipeline, nullptr);
 		vkDestroyPipeline(device, g_GfxPipelineForward_Simple.pipeline, nullptr);
 		vkDestroyPipeline(device, g_GfxPipelineForward_Shadows.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineForward_Wireframe.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineForward_Sk.pipeline, nullptr);
+		vkDestroyPipeline(device, g_GfxPipelineForward_Shadows_Sk.pipeline, nullptr);
 		
 		CreatePipeline();
 
@@ -1303,15 +1515,81 @@ void NewFrame()
 		glm::mat4 lightView = ViewMatrix(glm::vec3(s_UniBuffLighting.sunPos), s_LightRotation);
 		glm::mat4 lightProj = glm::orthoLH_ZO(-30.0f, 30.0f, -30.0f, 30.0f, .1f, 150.0f);
 
-		lightProj = PerspectiveMatrix(60.0f, shadowMapRes, shadowMapRes, .5f, 150.0);
+		lightProj = PerspectiveMatrix(60.0f, (float)shadowMapRes, (float)shadowMapRes, .5f, 150.0f);
 
+		// update lighting uniform buffer
 		s_UniBuffLighting.lightView = lightProj * lightView;
+		s_UniBuffLighting.textureIndex = s_BoundTexture->IsLoaded() ? s_BoundTexture->GetImageIndex() : (u32)-1;
+		s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
 		vkCmdUpdateBuffer(cmd, frameData.uniformBufferLighting.buffer, 0, sizeof(UniBuffLighting), &s_UniBuffLighting);
+
+		// update animation data
+		auto& [staging, mapped] = s_AnimBuffersStaging[g_FrameIndex];
+		VkUtils::Buffer& targetBuffer = s_AnimBuffers[g_FrameIndex].first;
+
+		SkeletalMesh* skm = g_SkeletalMeshes[0];
+		if (skm->IsLoaded())
+		{
+			u32 bufferSize = sizeof(glm::mat4) * skm->GetBoneCount();
+#if 1
+			VkBufferMemoryBarrier2 barrier = {};
+			barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+			barrier.size = bufferSize;
+			barrier.buffer = targetBuffer.buffer;
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+			barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+			
+			VkDependencyInfo depInfo = {};
+			depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+			depInfo.pBufferMemoryBarriers = &barrier;
+			depInfo.bufferMemoryBarrierCount = 1;
+			vkCmdPipelineBarrier2(cmd, &depInfo);
+
+			VkBufferCopy cpy = {};
+			cpy.size = bufferSize;
+			vkCmdCopyBuffer(cmd, staging.buffer, targetBuffer.buffer, 1, &cpy);
+#else
+			ImmediateSubmit([&staging, mapped, &targetBuffer, skm, bufferSize](VkCommandBuffer cmd)
+			{
+				VkBufferCopy cpy = {};
+				cpy.size = bufferSize;
+
+				vkCmdCopyBuffer(cmd, staging.buffer, targetBuffer.buffer, 1, &cpy);
+			});
+#endif
+		}
+
+
+		// build render list
+		using Renderable = std::pair<void*, u32>; // asset, entity index
+
+		std::vector<Renderable> staticMeshes; // todo: decent alloc
+		std::vector<Renderable> skeletalMeshes; // todo: decent alloc
+		
+		staticMeshes.reserve(8); // todo: decent alloc
+		skeletalMeshes.reserve(8); // todo: decent alloc
+
+		if (s_BoundTexture->IsLoaded())
+		{	
+			for (u32 i = 0; i < g_Entities.size(); i++)
+			{
+				SceneEntity& ent = g_Entities[i];
+				if (ent.visible)
+				{
+					if (ent.mesh && ent.mesh->IsLoaded())
+						staticMeshes.emplace_back(ent.mesh, i);
+
+					if (ent.skeletalMesh && ent.skeletalMesh->IsLoaded())
+						skeletalMeshes.emplace_back(ent.skeletalMesh, i);
+				}
+			}
+		}
 
 		// shadow map
 		{
-			VkUtils::SetViewportAndScissor(cmd, shadowMapRes, shadowMapRes);
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Shadows.pipeline);
+			VkUtils::SetViewportAndScissor(cmd, (float)shadowMapRes, (float)shadowMapRes);
 
 			VkRenderingAttachmentInfo depthAttachmentInfo = VkUtils::AttachmentInfoDepth(g_ShadowMap.view, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 
@@ -1327,34 +1605,70 @@ void NewFrame()
 			renderInfo.pStencilAttachment = nullptr;
 			vkCmdBeginRendering(cmd, &renderInfo);
 
-			for (const SceneEntity& entity : g_Entities)
+			if (s_UniBuffLighting.shadowPassEnabled)
 			{
-				if (!entity.mesh->IsLoaded() || !entity.visible)
-					continue;
+				// static meshes
+				{
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Shadows.pipeline);
 
-				glm::mat4 model = ModelMatrix(entity.transform);
+					VkDescriptorSet sets[] = { frameData.descriptorForward, g_BindlessDS };
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Shadows.layout, 0, 2, sets, 0, nullptr);
 
-				PushConstantShadow shadowShaderData;
-				shadowShaderData.lightView = lightProj * lightView * model;
-				shadowShaderData.vertexBuffer = entity.mesh->GetVertexBufferAddress();
-				vkCmdPushConstants(cmd, g_GfxPipelineForward_Shadows.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstantShadow), &shadowShaderData);
+					for (Renderable& renderable : staticMeshes)
+					{
+						SceneEntity& ent = g_Entities[renderable.second];
+						Mesh* mesh = (Mesh*)renderable.first;
 
-				vkCmdBindIndexBuffer(cmd, entity.mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-				for (const Submesh& submesh : entity.mesh->GetSubmeshes())
-					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+						glm::mat4 model = ModelMatrix(ent.transform);
+
+						MeshPushConstant shadowShaderData;
+						shadowShaderData.worldMatrix = lightProj * lightView * model;
+						shadowShaderData.modelMatrix = glm::mat4(1.0f); // dummy
+						shadowShaderData.vertexBuffer = mesh->GetVertexBufferAddress();
+						vkCmdPushConstants(cmd, g_GfxPipelineForward_Shadows.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &shadowShaderData);
+
+						vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+						for (const Submesh& submesh : mesh->GetSubmeshes())
+							vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+					}
+				}
+				// skeletal meshes
+				{
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Shadows_Sk.pipeline);
+
+					VkDescriptorSet sets[] = { frameData.descriptorForward, g_BindlessDS };
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Shadows_Sk.layout, 0, 2, sets, 0, nullptr);
+
+					for (Renderable& renderable : skeletalMeshes)
+					{
+						SceneEntity& ent = g_Entities[renderable.second];
+						SkeletalMesh* skMesh = (SkeletalMesh*)renderable.first;
+
+						glm::mat4 model = ModelMatrix(ent.transform);
+
+						SkMeshPushConstant meshPushConst;
+						meshPushConst.worldMatrix = lightProj * lightView * model;
+						meshPushConst.modelMatrix = glm::mat4(1.0f); // dummy
+						meshPushConst.vertexBuffer = skMesh->GetVertexBufferAddress();
+						meshPushConst.animBuffer = s_AnimBuffers[g_FrameIndex].second;
+						vkCmdPushConstants(cmd, g_GfxPipelineForward_Shadows_Sk.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SkMeshPushConstant), &meshPushConst);
+
+						vkCmdBindIndexBuffer(cmd, skMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+						for (const Submesh& submesh : skMesh->GetSubmeshes())
+							vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+					}
+				}
 			}
 
 			vkCmdEndRendering(cmd);
 		}
+
 		// normal scene
 		{
-			VkUtils::SetViewportAndScissor(cmd, g_SwapchainExtent.width, g_SwapchainExtent.height);
+			// setup viewport
+			VkUtils::SetViewportAndScissor(cmd, (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height);
 
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.pipeline);
-			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.layout, 0, 1, &frameData.descriptorForward, 0, nullptr);
-
-			s_UniBuffLighting.viewPos = glm::vec4(s_CamPos, 1.0f);
-
+			// image transitions
 			VkUtils::TransitionImageHandle images[] = { { g_CompositeFinal.image, false }, { g_GBuffer_Depth.image, true} };
 			VkUtils::TransitionImages(cmd, VkUtils::Undefined, VkUtils::Clear, images);
 
@@ -1389,43 +1703,82 @@ void NewFrame()
 			glm::mat4 camView = ViewMatrix(s_CamPos, s_CamRot);
 			glm::mat4 projection = PerspectiveMatrix(s_CamFOV, (float)g_SwapchainExtent.width, (float)g_SwapchainExtent.height, 0.1f, 1000.0f);
 
-			if (s_BoundTexture->IsLoaded())
+			// Static meshes
 			{
-				for (const SceneEntity& entity : g_Entities)
-				{
-					if (!entity.mesh->IsLoaded() || !entity.visible)
-						continue;
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_Wireframe ? g_GfxPipelineForward_Wireframe.pipeline : g_GfxPipelineForward.pipeline);
 
-					glm::mat4 model = ModelMatrix(entity.transform);
+				VkDescriptorSet sets[] = { frameData.descriptorForward, g_BindlessDS };
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward.layout, 0, 2, sets, 0, nullptr);
+
+				for (Renderable& renderable : staticMeshes)
+				{
+					SceneEntity& ent = g_Entities[renderable.second];
+					Mesh* mesh = (Mesh*)renderable.first;
+
+					glm::mat4 model = ModelMatrix(ent.transform);
 
 					MeshPushConstant meshPushConst;
 					meshPushConst.worldMatrix = projection * camView * model;
 					meshPushConst.modelMatrix = model;
-					meshPushConst.vertexBuffer = entity.mesh->GetVertexBufferAddress();
+					meshPushConst.vertexBuffer = mesh->GetVertexBufferAddress();
 					vkCmdPushConstants(cmd, g_GfxPipelineForward.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
 
-					vkCmdBindIndexBuffer(cmd, entity.mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-					for (const Submesh& submesh : entity.mesh->GetSubmeshes())
+					vkCmdBindIndexBuffer(cmd, mesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+					for (const Submesh& submesh : mesh->GetSubmeshes())
 						vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
 				}
+			
 			}
-
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
-
-			Mesh* debugLightMesh = g_Meshes[0];
-			if (debugLightMesh->IsLoaded())
+			// Skeletal meshes
 			{
-				glm::mat4 model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
+#if 1
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Sk.pipeline);
 
-				MeshPushConstant meshPushConst;
-				meshPushConst.worldMatrix = projection * camView * model;
-				meshPushConst.modelMatrix = model;
-				meshPushConst.vertexBuffer = debugLightMesh->GetVertexBufferAddress();
-				vkCmdPushConstants(cmd, g_GfxPipelineForward_Simple.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+				VkDescriptorSet sets[] = { frameData.descriptorForward, g_BindlessDS };
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Sk.layout, 0, 2, sets, 0, nullptr);
 
-				vkCmdBindIndexBuffer(cmd, debugLightMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
-				for (const Submesh& submesh : debugLightMesh->GetSubmeshes())
-					vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+				for (Renderable& renderable : skeletalMeshes)
+				{
+					SceneEntity& ent = g_Entities[renderable.second];
+					SkeletalMesh* skMesh = (SkeletalMesh*)renderable.first;
+
+					glm::mat4 model = ModelMatrix(ent.transform);
+
+					SkMeshPushConstant meshPushConst;
+					meshPushConst.worldMatrix = projection * camView * model;
+					meshPushConst.modelMatrix = model;
+					meshPushConst.vertexBuffer = skMesh->GetVertexBufferAddress();
+					meshPushConst.animBuffer = s_AnimBuffers[g_FrameIndex].second;
+					vkCmdPushConstants(cmd, g_GfxPipelineForward_Sk.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SkMeshPushConstant), &meshPushConst);
+
+					vkCmdBindIndexBuffer(cmd, skMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+					for (const Submesh& submesh : skMesh->GetSubmeshes())
+						vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+				}
+#endif
+			}
+			// Debug meshes
+			{
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.pipeline);
+
+				VkDescriptorSet sets[] = { frameData.descriptorForward };
+				vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_GfxPipelineForward_Simple.layout, 0, 1, sets, 0, nullptr);
+
+				Mesh* debugLightMesh = g_Meshes[0];
+				if (debugLightMesh->IsLoaded())
+				{
+					glm::mat4 model = glm::translate(glm::vec3(s_UniBuffLighting.sunPos)) * glm::scale(glm::vec3(0.2f));
+
+					MeshPushConstant meshPushConst;
+					meshPushConst.worldMatrix = projection * camView * model;
+					meshPushConst.modelMatrix = model;
+					meshPushConst.vertexBuffer = debugLightMesh->GetVertexBufferAddress();
+					vkCmdPushConstants(cmd, g_GfxPipelineForward_Simple.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstant), &meshPushConst);
+
+					vkCmdBindIndexBuffer(cmd, debugLightMesh->GetIndexBuffer().buffer, 0, VK_INDEX_TYPE_UINT32);
+					for (const Submesh& submesh : debugLightMesh->GetSubmeshes())
+						vkCmdDrawIndexed(cmd, submesh.indexCount, 1, submesh.indexOffset, 0, 0);
+				}
 			}
 
 			vkCmdEndRendering(cmd);

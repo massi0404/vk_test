@@ -421,7 +421,7 @@ namespace VkUtils {
         vkUpdateDescriptorSets(device, 1, &vkWrite, 0, nullptr);
     }
 
-    void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkImageView imgView, VkSampler sampler, VkImageLayout layout, u32 binding)
+    void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkImageView imgView, VkSampler sampler, VkImageLayout layout, u32 binding, u32 arrayIndex)
     {
         VkDescriptorImageInfo vkImageInfo;
         vkImageInfo.imageView = imgView;
@@ -434,6 +434,7 @@ namespace VkUtils {
         vkWrite.dstBinding = binding;
         vkWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         vkWrite.descriptorCount = 1;
+        vkWrite.dstArrayElement = arrayIndex;
         vkWrite.pImageInfo = &vkImageInfo;
 
         vkUpdateDescriptorSets(device, 1, &vkWrite, 0, nullptr);

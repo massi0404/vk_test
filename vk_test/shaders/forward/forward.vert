@@ -5,6 +5,7 @@ layout(location = 0) out vec2 outTexCoords;
 layout(location = 1) out vec3 outNormal;
 layout(location = 2) out vec3 outWorldPos;
 layout(location = 3) out vec4 outShadowView;
+layout(location = 4) out vec4 outColor;
 
 struct Vertex {
 	vec3 position;
@@ -33,6 +34,9 @@ layout (binding = 1) uniform SceneLighting
 	vec4 sunPos;
 	vec4 sunColor;
 	vec4 viewPos;
+	uint textureIndex;
+	uint shadowMappingEnabled;
+	uint pad[2];
 };
 
 void main() 
@@ -50,4 +54,6 @@ void main()
 	outWorldPos = (PushConstants.model_matrix * vec4(v.position, 1.0f)).xyz;
 	
 	outShadowView = shadowView * vec4(outWorldPos, 1.0f);
+
+	outColor = v.color;
 }

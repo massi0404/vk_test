@@ -7,11 +7,13 @@
 
 #include "Mesh.h"
 #include "Texture.h"
+#include "SkeletalMesh.h"
 
 enum class EResourceType
 {
 	Texture,
-	MeshBuffer
+	MeshBuffer,
+	SkeletalMeshBuffers
 };
 
 struct PendingLoadingRes
@@ -20,6 +22,7 @@ struct PendingLoadingRes
 	{
 		Texture* texture;
 		Mesh* mesh;
+		SkeletalMesh* skeletalMesh;
 	};
 	u64 size;
 	EResourceType type;
@@ -36,9 +39,11 @@ public:
 
 	void CreateTexture(Texture* texture);
 	void CreateMesh(Mesh* mesh);
+	void CreateSkeletalMesh(SkeletalMesh* skeletalMesh);
 
 	void DestroyMesh(Mesh* mesh);
 	void DestroyTexture(Texture* texture);
+	void DestroySkeletalMesh(SkeletalMesh* skeletalMesh);
 
 	void PushLoading(const PendingLoadingRes& res);
 	u32 PullLoaded(std::vector<PendingLoadingRes>& outLoadedRes);

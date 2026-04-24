@@ -90,7 +90,7 @@ namespace VkUtils {
 	// uniform buffer
 	void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkBuffer buffer, VkDeviceSize size, u32 binding);
 	// combined image sampler
-	void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkImageView imgView, VkSampler sampler, VkImageLayout layout, u32 binding);
+	void UpdateDescBinding(VkDevice device, VkDescriptorSet set, VkImageView imgView, VkSampler sampler, VkImageLayout layout, u32 binding, u32 arrayIndex = 0);
 
 	// void UpdateDescBindingArray(); todo
 
@@ -132,10 +132,4 @@ namespace VkUtils {
 	void TransitionImage(VkCommandBuffer cmd, ImageLayout from, ImageLayout to, TransitionImageHandle image);
 
 	void SetViewportAndScissor(VkCommandBuffer cmd, float width, float height);
-
-	template<typename T, VkShaderStageFlags stages>
-	constexpr VkPushConstantRange PushConstantRange()
-	{
-		return { stages, 0, sizeof(T) };
-	}
 }

@@ -131,7 +131,7 @@ void Mesh::Load(const std::filesystem::path& path)
     
     //PrintNodes(gltf, &gltf->nodes[0], 0);
 
-    constexpr bool kOverrideColors = true;
+    constexpr bool kOverrideColors = false;
     if constexpr (kOverrideColors)
     {
         for (Vertex& v : m_Vertices)
